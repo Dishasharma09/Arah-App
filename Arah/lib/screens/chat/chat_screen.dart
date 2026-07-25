@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
 import '../../app/theme/app_theme.dart';
 import '../../models/message_model.dart';
 import '../../provider/user_provider.dart';
@@ -40,6 +43,12 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isAssigned = false;      // Tracks if already assigned
   bool _isAssigning = false;     // Tracks assignment in progress
   String _resolvedChatId = '';   // Actual chatId (may be created on the fly)
+  bool _isInitialLoadComplete = false;
+
+  // Simplified real-time fields
+  List<Message> _messages = [];
+  ScrollController _scrollController = ScrollController();
+  StreamSubscription<QuerySnapshot>? _messagesSubscription;
 
   @override
   void initState() {
@@ -48,6 +57,14 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initChat();
     });
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _scrollController.dispose();
+    _messagesSubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> _initChat() async {
@@ -82,15 +99,52 @@ class _ChatScreenState extends State<ChatScreen> {
 
       // Mark messages as read
       _firestoreService.markMessagesAsRead(chatId, uid);
+
+      // Set up the real-time listener for all messages
+      _setupMessagesListener();
     } catch (e) {
       debugPrint('ChatScreen initChat error: $e');
+      if (mounted) {
+        setState(() {
+          _isInitialLoadComplete = true; // To avoid showing spinner forever on error
+        });
+      }
     }
   }
 
-  @override
-  void dispose() {
-    _messageController.dispose();
-    super.dispose();
+  void _setupMessagesListener() {
+    if (_resolvedChatId.isEmpty || !mounted) return;
+
+    final messagesStream = _firestoreService.db
+        .collection('chats')
+        .doc(_resolvedChatId)
+        .collection('messages')
+        .orderBy('timestamp', descending: false) // ascending order (oldest first)
+        .snapshots();
+
+    _messagesSubscription = messagesStream.listen((snapshot) {
+      if (!mounted) return;
+
+      final List<Message> messages = snapshot.docs
+          .map((doc) => Message.fromMap(doc.data(), doc.id))
+          .toList();
+
+      setState(() {
+        _messages = messages;
+        _isInitialLoadComplete = true;
+
+        // Scroll to bottom to show latest messages
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.animateTo(
+              _scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
+          }
+        });
+      });
+    });
   }
 
   void _sendMessage() async {
@@ -98,22 +152,41 @@ class _ChatScreenState extends State<ChatScreen> {
     if (text.isEmpty || _resolvedChatId.isEmpty) return;
 
     final userProvider = Provider.of<UserProvider>(context, listen: false);
+    final senderId = userProvider.uid;
+    final senderName = userProvider.name;
+
+    if (senderId.isEmpty) return;
+
+    // Create a temporary message ID
+    final messageId = _firestoreService.db
+        .collection('chats')
+        .doc(_resolvedChatId)
+        .collection('messages')
+        .doc()
+        .id;
 
     final message = Message(
-      id: '',
-      senderId: userProvider.uid,
+      id: messageId,
+      senderId: senderId,
+      senderName: senderName,
       content: text,
       type: MessageType.text,
       timestamp: DateTime.now(),
       isRead: false,
     );
 
-    _messageController.clear();
-    await _firestoreService.sendMessage(
-        _resolvedChatId, message, widget.otherUserId);
+    try {
+      await _firestoreService.sendMessage(_resolvedChatId, message, widget.otherUserId);
+      _messageController.clear();
+    } catch (e) {
+      debugPrint('Error sending message: $e');
+      if (mounted) {
+        _showToast('Failed to send message');
+      }
+    }
   }
 
-  void _pickAndUploadFile() async {
+  Future<void> _pickAndUploadFile() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['jpg', 'png', 'pdf', 'doc', 'docx', 'zip'],
@@ -131,6 +204,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final message = Message(
           id: '',
           senderId: userProvider.uid,
+          senderName: userProvider.name,
           content: fileUrl,
           type: MessageType.file,
           timestamp: DateTime.now(),
@@ -150,100 +224,41 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Buyer taps "Assign to Seller" — shows confirmation then commits
-  void _assignToSeller() async {
-    if (_isAssigned || _isAssigning || widget.taskId.isEmpty) return;
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
-          'Assign Task?',
-          style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.navyBlue),
-        ),
-        content: Text(
-          'This will assign "${widget.taskTitle}" to ${widget.otherUserName}. '
-          'The task will be locked to them and move to your Orders page.',
-          style: TextStyle(color: Colors.blueGrey.shade700, height: 1.5),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text('Cancel',
-                style: TextStyle(color: Colors.blueGrey.shade500)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.arahPurple,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8)),
-            ),
-            child: const Text('Assign'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true || !mounted) return;
-
-    setState(() => _isAssigning = true);
-
+  void _showToast(String message) {
+    if (!mounted) return;
     try {
-      final userProvider = Provider.of<UserProvider>(context, listen: false);
-      final buyerName = userProvider.name;
-      final buyerId = userProvider.uid;
-
-      // Get seller's name
-      final sellerInfo =
-          await _firestoreService.getUserBasicInfo(widget.otherUserId);
-      final sellerName = sellerInfo['name'] ?? widget.otherUserName;
-
-      await _firestoreService.assignTaskToSeller(
-        taskId: widget.taskId,
-        sellerId: widget.otherUserId,
-        sellerName: sellerName,
-        buyerId: buyerId,
-        buyerName: buyerName,
-        chatId: _resolvedChatId,
-        taskTitle: widget.taskTitle,
-        taskPrice: widget.taskPrice,
-      );
-
-      // Send a system message in chat
-      final systemMsg = Message(
-        id: '',
-        senderId: buyerId,
-        content:
-            '✅ Task assigned to $sellerName! Check your Orders page to track progress.',
-        type: MessageType.text,
-        timestamp: DateTime.now(),
-        isRead: false,
-      );
-      await _firestoreService.sendMessage(
-          _resolvedChatId, systemMsg, widget.otherUserId);
-
-      if (mounted) {
-        setState(() {
-          _isAssigned = true;
-          _isAssigning = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Task assigned to ${widget.otherUserName}! 🎉'),
-            backgroundColor: const Color(0xFF10B981),
+      final overlay = Overlay.of(context);
+      if (!mounted) return;
+      final entry = OverlayEntry(
+        builder: (context) => Positioned(
+          bottom: MediaQuery.of(context).size.height * 0.1,
+          child: Center(
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.8),
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: Text(
+                  message,
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ),
           ),
-        );
-      }
+        ),
+      );
+      overlay.insert(entry);
+      Future.delayed(const Duration(seconds: 2)).then((_) {
+        if (mounted) {
+          entry.remove();
+        }
+      });
     } catch (e) {
-      if (mounted) {
-        setState(() => _isAssigning = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Assignment failed: $e')),
-        );
-      }
+      // Ignore errors related to overlay
+      if (kDebugMode) print('Error showing toast: $e');
     }
   }
 
@@ -367,6 +382,19 @@ class _ChatScreenState extends State<ChatScreen> {
                   value: 'report', child: Text("Report User")),
               const PopupMenuItem(value: 'block', child: Text("Block User")),
             ],
+            onSelected: (value) async {
+              if (value == 'report') {
+                // Show report dialog
+                await _showReportDialog();
+              } else if (value == 'block') {
+                // TODO: Implement block user functionality
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Block user functionality coming soon')),
+                  );
+                }
+              }
+            },
           ),
         ],
       ),
@@ -389,8 +417,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         fontSize: 12,
                         color: Colors.blueGrey.shade600,
                         fontWeight: FontWeight.w500,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   Text(
@@ -409,64 +437,32 @@ class _ChatScreenState extends State<ChatScreen> {
                 ? const Center(
                     child: CircularProgressIndicator(
                         color: AppTheme.arahPurple))
-                : StreamBuilder<List<Message>>(
-                    stream:
-                        _firestoreService.fetchMessages(_resolvedChatId),
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState ==
-                          ConnectionState.waiting) {
-                        return const Center(
-                            child: CircularProgressIndicator(
-                                color: AppTheme.arahPurple));
-                      }
-                      if (snapshot.hasError) {
-                        return Center(
-                            child: Text("Error: ${snapshot.error}"));
-                      }
+                : !_isInitialLoadComplete
+                    ? const Center(
+                        child: CircularProgressIndicator(
+                            color: AppTheme.arahPurple))
+                    : Column(
+                        children: [
+                          // Message list
+                          Expanded(
+                            child: ListView.builder(
+                              controller: _scrollController,
+                              itemCount: _messages.length,
+                              itemBuilder: (context, index) {
+                                final message = _messages[index];
+                                final isMe = message.senderId == currentUserId;
 
-                      final messages = snapshot.data ?? [];
-
-                      if (messages.isEmpty) {
-                        return Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.chat_bubble_outline,
-                                  size: 48,
-                                  color: Colors.blueGrey.shade200),
-                              const SizedBox(height: 12),
-                              Text(
-                                'Start the conversation!',
-                                style: TextStyle(
-                                  color: Colors.blueGrey.shade400,
-                                  fontSize: 16,
-                                ),
-                              ),
-                            ],
+                                if (message.type == MessageType.file) {
+                                  return _buildFileBubble(
+                                      message.content, isMe, message.timestamp);
+                                }
+                                return _buildTextBubble(
+                                    message.content, isMe, message.timestamp, message.senderName);
+                              },
+                            ),
                           ),
-                        );
-                      }
-
-                      return ListView.builder(
-                        reverse: true,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 20),
-                        itemCount: messages.length,
-                        itemBuilder: (context, index) {
-                          final message =
-                              messages[messages.length - 1 - index];
-                          final isMe = message.senderId == currentUserId;
-
-                          if (message.type == MessageType.file) {
-                            return _buildFileBubble(
-                                message.content, isMe, message.timestamp);
-                          }
-                          return _buildTextBubble(
-                              message.content, isMe, message.timestamp);
-                        },
-                      );
-                    },
-                  ),
+                        ],
+                      ),
           ),
           if (_isUploading)
             const Padding(
@@ -480,16 +476,16 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildTextBubble(String text, bool isMe, DateTime timestamp) {
+  Widget _buildTextBubble(String text, bool isMe, DateTime timestamp, String senderName) {
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
+          maxWidth: MediaQuery.of(context).size.width * 0.8,
         ),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
           decoration: BoxDecoration(
             color: isMe ? AppTheme.arahPurple : Colors.white,
             borderRadius: BorderRadius.only(
@@ -508,39 +504,42 @@ class _ChatScreenState extends State<ChatScreen> {
               )
             ],
           ),
-          child: Stack(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.8,
+          ),
+          child: Column(
+            crossAxisAlignment:
+                isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
             children: [
-              Padding(
-                padding: const EdgeInsets.only(bottom: 16, right: 40),
-                child: Text(
-                  text,
-                  style: TextStyle(
-                    color: isMe ? Colors.white : AppTheme.navyBlue,
-                    fontSize: 15,
-                    height: 1.4,
-                  ),
+              Text(
+                text,
+                style: TextStyle(
+                  color: isMe ? Colors.white : Colors.black,
+                  fontSize: 16,
                 ),
               ),
-              Positioned(
-                bottom: 0,
-                right: 0,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment:
+                    isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+                children: [
+                  if (!isMe)
                     Text(
-                      DateFormat('HH:mm').format(timestamp),
+                      senderName,
                       style: TextStyle(
-                        color: isMe ? Colors.white70 : Colors.grey.shade600,
-                        fontSize: 11,
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
-                    if (isMe) ...[
-                      const SizedBox(width: 3),
-                      const Icon(Icons.done_all,
-                          size: 14, color: Colors.white70),
-                    ]
-                  ],
-                ),
+                  Text(
+                    DateFormat('hh:mm a').format(timestamp),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: isMe ? Colors.white70 : Colors.grey[600],
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -558,7 +557,7 @@ class _ChatScreenState extends State<ChatScreen> {
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
+          maxWidth: MediaQuery.of(context).size.width * 0.8,
         ),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
@@ -699,5 +698,215 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _showReportDialog() async {
+    final TextEditingController descriptionController = TextEditingController();
+    String? selectedOption;
+
+    final List<String> reportReasons = [
+      'Harassment or bullying',
+      'Hate speech or discrimination',
+      'Scam or fraud',
+      'Inappropriate content',
+      'Spam',
+      'Other'
+    ];
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Report User'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                value: selectedOption,
+                decoration: const InputDecoration(
+                  labelText: 'Reason for reporting',
+                  border: OutlineInputBorder(),
+                ),
+                items: reportReasons.map((reason) => DropdownMenuItem(
+                  value: reason,
+                  child: Text(reason),
+                )).toList(),
+                onChanged: (value) {
+                  setState(() {
+                    selectedOption = value;
+                  });
+                },
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: descriptionController,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: 'Description',
+                  hintText: 'Please provide details about the issue...',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              debugPrint('[ReportDialog] Submit button pressed');
+              if (selectedOption == null) {
+                debugPrint('[ReportDialog] No reason selected');
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Please select a reason')),
+                  );
+                }
+                return;
+              }
+              debugPrint('[ReportDialog] Reason selected: $selectedOption');
+              debugPrint('[ReportDialog] Description: ${descriptionController.text}');
+
+              // Show loading snackbar BEFORE popping the dialog
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Submitting report...')),
+                );
+              }
+              // Close dialog
+              if (mounted) {
+                Navigator.of(context).pop();
+              }
+
+              try {
+                debugPrint('[ReportDialog] Calling reportUser...');
+                // Report the user using FirestoreService
+                await _firestoreService.reportUser(
+                  reporterId: Provider.of<UserProvider>(context, listen: false).uid,
+                  reportedUserId: widget.otherUserId,
+                  reason: selectedOption!, // We know it's not null due to the check above
+                  description: descriptionController.text,
+                );
+                debugPrint('[ReportDialog] reportUser succeeded');
+
+                if (mounted) {
+                  _showToast('Report submitted successfully');
+                }
+              } catch (e, stackTrace) {
+                debugPrint('[ReportDialog] reportUser failed: $e');
+                debugPrint('[ReportDialog] Stack trace: $stackTrace');
+                if (mounted) {
+                  _showToast('Failed to submit report: $e');
+                }
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.arahPurple,
+            ),
+            child: const Text('Submit Report'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _assignToSeller() async {
+    if (_isAssigned || _isAssigning || widget.taskId.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          'Assign Task?',
+          style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.navyBlue),
+        ),
+        content: Text(
+          'This will assign "${widget.taskTitle}" to ${widget.otherUserName}. '
+          'The task will be locked to them and move to your Orders page.',
+          style: TextStyle(color: Colors.blueGrey.shade700, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('Cancel',
+                style: TextStyle(color: Colors.blueGrey.shade500)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.arahPurple,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Assign'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isAssigning = true);
+
+    try {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final buyerName = userProvider.name;
+      final buyerId = userProvider.uid;
+
+      // Get seller's name
+      final sellerInfo =
+          await _firestoreService.getUserBasicInfo(widget.otherUserId);
+      final sellerName = sellerInfo['name'] ?? widget.otherUserName;
+
+      await _firestoreService.assignTaskToSeller(
+        taskId: widget.taskId,
+        sellerId: widget.otherUserId,
+        sellerName: sellerName,
+        buyerId: buyerId,
+        buyerName: buyerName,
+        chatId: _resolvedChatId,
+        taskTitle: widget.taskTitle,
+        taskPrice: widget.taskPrice,
+      );
+
+      // Send a system message in chat
+      final systemMsg = Message(
+        id: '',
+        senderId: buyerId,
+        senderName: buyerName,
+        content:
+            '✅ Task assigned to $sellerName! Check your Orders page to track progress.',
+        type: MessageType.text,
+        timestamp: DateTime.now(),
+        isRead: false,
+      );
+      await _firestoreService.sendMessage(
+          _resolvedChatId, systemMsg, widget.otherUserId);
+
+      if (mounted) {
+        setState(() {
+          _isAssigned = true;
+          _isAssigning = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Task assigned to ${widget.otherUserName}! 🎉'),
+            backgroundColor: const Color(0xFF10B981),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isAssigning = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Assignment failed: $e')),
+        );
+      }
+    }
   }
 }
