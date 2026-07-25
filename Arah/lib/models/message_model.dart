@@ -5,6 +5,7 @@ enum MessageType { text, image, file }
 class Message {
   final String id;
   final String senderId;
+  final String senderName; // Denormalized for performance
   final String content;
   final MessageType type;
   final DateTime timestamp;
@@ -13,6 +14,7 @@ class Message {
   Message({
     required this.id,
     required this.senderId,
+    required this.senderName,
     required this.content,
     required this.type,
     required this.timestamp,
@@ -23,6 +25,7 @@ class Message {
     return Message(
       id: id,
       senderId: map['senderId'] ?? '',
+      senderName: map['senderName'] ?? 'Unknown User',
       content: map['content'] ?? '',
       type: MessageType.values.firstWhere(
         (e) => e.toString() == 'MessageType.${map['type']}',
@@ -36,6 +39,7 @@ class Message {
   Map<String, dynamic> toMap() {
     return {
       'senderId': senderId,
+      'senderName': senderName,
       'content': content,
       'type': type.name,
       'timestamp': timestamp,
