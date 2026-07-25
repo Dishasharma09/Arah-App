@@ -9,6 +9,8 @@ import 'package:flutter/foundation.dart';
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
+  FirebaseFirestore get db => _db;
+
   // Constant for report cooldown duration (24 hours)
   static const Duration _reportCooldown = Duration(hours: 24);
 
@@ -493,7 +495,7 @@ class FirestoreService {
         .doc(chatId)
         .collection('messages')
         .orderBy('timestamp', descending: false) // ascending
-        .startAfterDocument([afterDocument]);
+        .startAfterDocument(afterDocument);
     return query.limit(limit).get();
   }
 
@@ -509,7 +511,7 @@ class FirestoreService {
         .doc(chatId)
         .collection('messages')
         .orderBy('timestamp', descending: false) // ascending
-        .endBeforeDocument([beforeDocument]);
+        .endBeforeDocument(beforeDocument);
     return query.limit(limit).get();
   }
 

@@ -30,6 +30,21 @@ void main() async {
       rethrow;
     }
   }
+
+  // Pass all uncaught errors from the framework to Crashlytics.
+  FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+
+  // Optional: Also catch asynchronous errors not caught by the Flutter framework.
+  PlatformDispatcher.instance.onError = (error, stack) {
+    FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+    return true;
+  };
+
+  // Initialize Analytics
+  final analytics = FirebaseAnalytics.instance;
+  await analytics.setAnalyticsCollectionEnabled(true);
+  await analytics.logAppOpen();
+
   runApp(
     MultiProvider(
       providers: [

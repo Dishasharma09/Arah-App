@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
 import '../../app/theme/app_theme.dart';
 import '../../models/message_model.dart';
 import '../../provider/user_provider.dart';
@@ -42,16 +43,12 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isAssigned = false;      // Tracks if already assigned
   bool _isAssigning = false;     // Tracks assignment in progress
   String _resolvedChatId = '';   // Actual chatId (may be created on the fly)
+  bool _isInitialLoadComplete = false;
 
-  // Pagination and real-time fields
+  // Simplified real-time fields
   List<Message> _messages = [];
   ScrollController _scrollController = ScrollController();
-  DocumentSnapshot? _oldestMessageDoc; // The document of the oldest message in our list (for loading older messages)
-  DocumentSnapshot? _latestMessageDoc; // The document of the latest message in our list (for real-time new messages)
-  bool _isLoadingMore = false;
-  bool _hasMoreMessages = true; // Whether there are more older messages to load
-  StreamSubscription<QuerySnapshot>? _newMessagesSubscription;
-  bool _isInitialLoadComplete = false;
+  StreamSubscription<QuerySnapshot>? _messagesSubscription;
 
   @override
   void initState() {
@@ -66,7 +63,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _messageController.dispose();
     _scrollController.dispose();
-    _newMessagesSubscription?.cancel();
+    _messagesSubscription?.cancel();
     super.dispose();
   }
 
@@ -103,11 +100,8 @@ class _ChatScreenState extends State<ChatScreen> {
       // Mark messages as read
       _firestoreService.markMessagesAsRead(chatId, uid);
 
-      // Load the first page of messages (most recent 20)
-      await _loadFirstPage();
-
-      // Set up the real-time listener for new messages
-      _setupNewMessagesListener();
+      // Set up the real-time listener for all messages
+      _setupMessagesListener();
     } catch (e) {
       debugPrint('ChatScreen initChat error: $e');
       if (mounted) {
@@ -118,144 +112,39 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  Future<void> _loadFirstPage() async {
-    final userProvider = Provider.of<UserProvider>(context, listen: false);
-    final uid = userProvider.uid;
-    if (uid.isEmpty || _resolvedChatId.isEmpty) return;
+  void _setupMessagesListener() {
+    if (_resolvedChatId.isEmpty || !mounted) return;
 
-    try {
-      // Query for the most recent 20 messages (newest first)
-      final querySnapshot = await _firestoreService._db
-          .collection('chats')
-          .doc(_resolvedChatId)
-          .collection('messages')
-          .orderBy('timestamp', descending: true)
-          .limit(20)
-          .get();
-
-      if (querySnapshot.docs.isEmpty) {
-        setState(() {
-          _messages = [];
-          _oldestMessageDoc = null;
-          _latestMessageDoc = null;
-          _hasMoreMessages = false;
-          _isInitialLoadComplete = true;
-        });
-        return;
-      }
-
-      // Convert to messages and reverse to get ascending order (oldest first)
-      final List<Message> messages = querySnapshot.docs
-          .map((doc) => Message.fromMap(doc.data(), doc.id))
-          .toList();
-
-      // Reverse to get ascending order (oldest first)
-      messages.reverse();
-
-      setState(() {
-        _messages = messages;
-        // The oldest message in our list is the first one (after reversing, which is the last in the original query)
-        _oldestMessageDoc = querySnapshot.docs.last; // Last in the original query (newest first) is the oldest of the 20
-        // The latest message in our list is the last one (after reversing, which is the first in the original query)
-        _latestMessageDoc = querySnapshot.docs.first; // First in the original query (newest first) is the newest of the 20
-        _isInitialLoadComplete = true;
-      });
-    } catch (e) {
-      debugPrint('Error loading first page: $e');
-      if (mounted) {
-        setState(() {
-          _isInitialLoadComplete = true; // To avoid showing spinner forever on error
-        });
-      }
-    }
-  }
-
-  void _setupNewMessagesListener() {
-    if (_latestMessageDoc == null || !mounted) return;
-
-    // Listen for messages newer than the latest message we have
-    final newMessagesStream = _firestoreService._db
+    final messagesStream = _firestoreService.db
         .collection('chats')
         .doc(_resolvedChatId)
         .collection('messages')
-        .orderBy('timestamp', descending: false) // ascending
-        .startAfterDocument([_latestMessageDoc])
+        .orderBy('timestamp', descending: false) // ascending order (oldest first)
         .snapshots();
 
-    _newMessagesSubscription = newMessagesStream.listen((snapshot) {
+    _messagesSubscription = messagesStream.listen((snapshot) {
       if (!mounted) return;
 
-      final List<Message> newMessages = snapshot.docs
-          .map((doc) => Message.fromMap(doc.data(), doc.id))
-          .toList();
-
-      if (newMessages.isNotEmpty) {
-        setState(() {
-          // Add new messages to the end of the list
-          _messages.addAll(newMessages);
-          // Update the latest message document to the last one in the new batch
-          _latestMessageDoc = snapshot.docs.last;
-          // Scroll to the bottom to show the new message
-          _scrollController.animateTo(
-            _scrollController.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
-        });
-      }
-    });
-  }
-
-  Future<void> _loadMoreMessages() async {
-    if (!_hasMoreMessages || _isLoadingMore || _oldestMessageDoc == null || !mounted) return;
-
-    setState(() {
-      _isLoadingMore = true;
-    });
-
-    try {
-      // Query for messages older than the oldest message we have
-      final querySnapshot = await _firestoreService._db
-          .collection('chats')
-          .doc(_resolvedChatId)
-          .collection('messages')
-          .orderBy('timestamp', descending: false) // ascending
-          .endBeforeDocument([_oldestMessageDoc!])
-          .limit(20)
-          .get();
-
-      if (querySnapshot.docs.isEmpty) {
-        setState(() {
-          _hasMoreMessages = false;
-          _isLoadingMore = false;
-        });
-        return;
-      }
-
-      // Convert to messages (they are in ascending order: oldest first)
-      final List<Message> olderMessages = querySnapshot.docs
+      final List<Message> messages = snapshot.docs
           .map((doc) => Message.fromMap(doc.data(), doc.id))
           .toList();
 
       setState(() {
-        // Prepend the older messages to the list
-        _messages = [...olderMessages, ..._messages];
-        // Update the oldest message document to the first one in the older batch
-        _oldestMessageDoc = querySnapshot.docs.first;
-        _isLoadingMore = false;
-        // If we got less than 20, assume no more messages
-        if (querySnapshot.docs.length < 20) {
-          _hasMoreMessages = false;
-        }
-      });
-    } catch (e) {
-      debugPrint('Error loading more messages: $e');
-      if (mounted) {
-        setState(() {
-          _isLoadingMore = false;
+        _messages = messages;
+        _isInitialLoadComplete = true;
+
+        // Scroll to bottom to show latest messages
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.animateTo(
+              _scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
+          }
         });
-      }
-    }
+      });
+    });
   }
 
   void _sendMessage() async {
@@ -269,7 +158,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (senderId.isEmpty) return;
 
     // Create a temporary message ID
-    final messageId = _firestoreService._db
+    final messageId = _firestoreService.db
         .collection('chats')
         .doc(_resolvedChatId)
         .collection('messages')
@@ -331,104 +220,6 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       } finally {
         if (mounted) setState(() => _isUploading = false);
-      }
-    }
-  }
-
-  /// Buyer taps "Assign to Seller" — shows confirmation then commits
-  void _assignToSeller() async {
-    if (_isAssigned || _isAssigning || widget.taskId.isEmpty) return;
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
-          'Assign Task?',
-          style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.navyBlue),
-        ),
-        content: Text(
-          'This will assign "${widget.taskTitle}" to ${widget.otherUserName}. '
-          'The task will be locked to them and move to your Orders page.',
-          style: TextStyle(color: Colors.blueGrey.shade700, height: 1.5),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text('Cancel',
-                style: TextStyle(color: Colors.blueGrey.shade500)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.arahPurple,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8)),
-            ),
-            child: const Text('Assign'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true || !mounted) return;
-
-    setState(() => _isAssigning = true);
-
-    try {
-      final userProvider = Provider.of<UserProvider>(context, listen: false);
-      final buyerName = userProvider.name;
-      final buyerId = userProvider.uid;
-
-      // Get seller's name
-      final sellerInfo =
-          await _firestoreService.getUserBasicInfo(widget.otherUserId);
-      final sellerName = sellerInfo['name'] ?? widget.otherUserName;
-
-      await _firestoreService.assignTaskToSeller(
-        taskId: widget.taskId,
-        sellerId: widget.otherUserId,
-        sellerName: sellerName,
-        buyerId: buyerId,
-        buyerName: buyerName,
-        chatId: _resolvedChatId,
-        taskTitle: widget.taskTitle,
-        taskPrice: widget.taskPrice,
-      );
-
-      // Send a system message in chat
-      final systemMsg = Message(
-        id: '',
-        senderId: buyerId,
-        senderName: buyerName,
-        content:
-            '✅ Task assigned to $sellerName! Check your Orders page to track progress.',
-        type: MessageType.text,
-        timestamp: DateTime.now(),
-        isRead: false,
-      );
-      await _firestoreService.sendMessage(
-          _resolvedChatId, systemMsg, widget.otherUserId);
-
-      if (mounted) {
-        setState(() {
-          _isAssigned = true;
-          _isAssigning = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Task assigned to ${widget.otherUserName}! 🎉'),
-            backgroundColor: const Color(0xFF10B981),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isAssigning = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Assignment failed: $e')),
-        );
       }
     }
   }
@@ -626,8 +417,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         fontSize: 12,
                         color: Colors.blueGrey.shade600,
                         fontWeight: FontWeight.w500,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   Text(
@@ -652,26 +443,6 @@ class _ChatScreenState extends State<ChatScreen> {
                             color: AppTheme.arahPurple))
                     : Column(
                         children: [
-                          // Load more button
-                          if (_hasMoreMessages && !_isLoadingMore)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 8.0),
-                              child: ElevatedButton(
-                                onPressed: _loadMoreMessages,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: AppTheme.arahPurple,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 16, vertical: 8),
-                                  shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(20)),
-                                ),
-                                child: const Text(
-                                  'Load More Messages',
-                                  style: TextStyle(fontSize: 12),
-                                ),
-                              ),
-                            ),
                           // Message list
                           Expanded(
                             child: ListView.builder(
@@ -709,7 +480,9 @@ class _ChatScreenState extends State<ChatScreen> {
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.75,
+        ),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
@@ -1035,5 +808,102 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
     );
+  }
+
+  void _assignToSeller() async {
+    if (_isAssigned || _isAssigning || widget.taskId.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          'Assign Task?',
+          style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.navyBlue),
+        ),
+        content: Text(
+          'This will assign "${widget.taskTitle}" to ${widget.otherUserName}. '
+          'The task will be locked to them and move to your Orders page.',
+          style: TextStyle(color: Colors.blueGrey.shade700, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('Cancel',
+                style: TextStyle(color: Colors.blueGrey.shade500)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.arahPurple,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Assign'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isAssigning = true);
+
+    try {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final buyerName = userProvider.name;
+      final buyerId = userProvider.uid;
+
+      // Get seller's name
+      final sellerInfo =
+          await _firestoreService.getUserBasicInfo(widget.otherUserId);
+      final sellerName = sellerInfo['name'] ?? widget.otherUserName;
+
+      await _firestoreService.assignTaskToSeller(
+        taskId: widget.taskId,
+        sellerId: widget.otherUserId,
+        sellerName: sellerName,
+        buyerId: buyerId,
+        buyerName: buyerName,
+        chatId: _resolvedChatId,
+        taskTitle: widget.taskTitle,
+        taskPrice: widget.taskPrice,
+      );
+
+      // Send a system message in chat
+      final systemMsg = Message(
+        id: '',
+        senderId: buyerId,
+        senderName: buyerName,
+        content:
+            '✅ Task assigned to $sellerName! Check your Orders page to track progress.',
+        type: MessageType.text,
+        timestamp: DateTime.now(),
+        isRead: false,
+      );
+      await _firestoreService.sendMessage(
+          _resolvedChatId, systemMsg, widget.otherUserId);
+
+      if (mounted) {
+        setState(() {
+          _isAssigned = true;
+          _isAssigning = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Task assigned to ${widget.otherUserName}! 🎉'),
+            backgroundColor: const Color(0xFF10B981),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isAssigning = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Assignment failed: $e')),
+        );
+      }
+    }
   }
 }
