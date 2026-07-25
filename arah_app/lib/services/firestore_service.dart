@@ -3,9 +3,16 @@ import '../models/message_model.dart';
 import '../models/chat_room_model.dart';
 import '../models/user_model.dart';
 import '../models/task_model.dart';
+import '../models/report_model.dart'; // Add this import
+import 'package:flutter/foundation.dart';
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
+
+  FirebaseFirestore get db => _db;
+
+  // Constant for report cooldown duration (24 hours)
+  static const Duration _reportCooldown = Duration(hours: 24);
 
   // ─── USER PROFILE ──────────────────────────────────────────────────────────
 
@@ -245,6 +252,7 @@ class FirestoreService {
   }
 
   /// Save a rating and review, update the rated user's average rating
+  /// Uses a transaction to ensure atomicity and prevent duplicate ratings
   Future<void> saveRating({
     required String orderId,
     required String ratedUserId,
@@ -253,47 +261,102 @@ class FirestoreService {
     required bool isBuyerRating, // true = buyer is rating the seller
     String reviewText = '',
   }) async {
-    final batch = _db.batch();
+    debugPrint('FirestoreService.saveRating called: orderId=$orderId, ratedUserId=$ratedUserId, raterId=$raterId, rating=$rating, isBuyerRating=$isBuyerRating');
 
-    // Mark the order as rated
-    final orderField = isBuyerRating ? 'ratedByBuyer' : 'ratedBySeller';
-    batch.update(_db.collection('orders').doc(orderId), {orderField: true});
+    // 1. Validate inputs
+    if (orderId.trim().isEmpty) {
+      throw Exception('Order ID is required');
+    }
+    if (ratedUserId.trim().isEmpty) {
+      throw Exception('Rated user ID is required');
+    }
+    if (raterId.trim().isEmpty) {
+      throw Exception('Rater ID is required');
+    }
+    if (raterId == ratedUserId) {
+      throw Exception('You cannot rate yourself');
+    }
+    if (rating < 1 || rating > 5) {
+      throw Exception('Rating must be between 1 and 5');
+    }
+    if (reviewText.length > 500) {
+      throw Exception('Review text cannot exceed 500 characters');
+    }
 
-    // Add rating to the rated user's ratings subcollection
-    final ratingRef = _db
-        .collection('users')
-        .doc(ratedUserId)
-        .collection('ratings')
-        .doc();
-    batch.set(ratingRef, {
-      'rating': rating,
-      'reviewText': reviewText,
-      'raterId': raterId,
-      'orderId': orderId,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
+    // 2. Use a transaction to ensure atomicity and prevent duplicate ratings
+    try {
+      await _db.runTransaction((transaction) async {
+        // Get the order document to check if already rated by this user
+        final orderDoc = await transaction.get(_db.collection('orders').doc(orderId));
+        if (!orderDoc.exists) {
+          throw Exception('Order not found');
+        }
 
-    await batch.commit();
+        final orderData = orderDoc.data() as Map<String, dynamic>;
+        final orderRaterField = isBuyerRating ? 'ratedByBuyer' : 'ratedBySeller';
 
-    // Update average rating (not in batch — needs a read first)
+        // Check if already rated by this user
+        if (orderData[orderRaterField] == true) {
+          throw Exception('You have already rated this order');
+        }
+
+        // Mark the order as rated
+        transaction.update(orderDoc.reference, {orderRaterField: true});
+
+        // Add rating to the rated user's ratings subcollection
+        final ratingRef = _db
+            .collection('users')
+            .doc(ratedUserId)
+            .collection('ratings')
+            .doc();
+
+        transaction.set(ratingRef, {
+          'rating': rating,
+          'reviewText': reviewText.trim(),
+          'raterId': raterId,
+          'orderId': orderId,
+          'isBuyerRating': isBuyerRating, // Track who gave the rating
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+
+        debugPrint('FirestoreService: Rating saved successfully for user $ratedUserId');
+      });
+    } catch (e) {
+      debugPrint('FirestoreService: Error saving rating: $e');
+      rethrow;
+    }
+
+    // 3. Update average rating outside the transaction (requires reading all ratings)
     try {
       final ratingsSnap = await _db
           .collection('users')
           .doc(ratedUserId)
           .collection('ratings')
           .get();
+
       if (ratingsSnap.docs.isNotEmpty) {
-        final avg = ratingsSnap.docs
-                .map((d) => (d.data()['rating'] as num).toDouble())
-                .reduce((a, b) => a + b) /
-            ratingsSnap.docs.length;
-        await _db.collection('users').doc(ratedUserId).update({
-          'avgRating': avg,
-          'ratingCount': ratingsSnap.docs.length,
-        });
+        // Filter out any null or invalid ratings
+        final validRatings = ratingsSnap.docs
+            .map((doc) => doc.data())
+            .where((data) => data['rating'] != null)
+            .map((data) => (data['rating'] as num).toDouble())
+            .toList();
+
+        if (validRatings.isNotEmpty) {
+          final avg = validRatings.reduce((a, b) => a + b) / validRatings.length;
+          await _db
+              .collection('users')
+              .doc(ratedUserId)
+              .update({
+                'avgRating': avg,
+                'ratingCount': validRatings.length,
+              });
+        }
       }
     } catch (e) {
+      debugPrint('Warning: Failed to update average rating for user $ratedUserId: $e');
       // Non-critical — rating saved, average update failed
+      // We don't rethrow because the rating itself was saved successfully
     }
   }
 
@@ -352,7 +415,7 @@ class FirestoreService {
     }
   }
 
-  /// Stream messages for a chat
+  /// Stream messages for a chat (for real-time updates)
   Stream<List<Message>> fetchMessages(String chatId) {
     return _db
         .collection('chats')
@@ -365,13 +428,44 @@ class FirestoreService {
             .toList());
   }
 
+  /// Fetch a page of messages for a chat, ordered by timestamp (oldest first)
+  /// [limit] is the number of messages to fetch
+  /// [startAfterDocument] is the document to start after (for pagination)
+  Future<QuerySnapshot> fetchMessagesPage(String chatId, int limit,
+      {DocumentSnapshot? startAfterDocument}) async {
+    Query query = _db
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('timestamp', descending: false)
+        .limit(limit);
+
+    if (startAfterDocument != null) {
+      query = query.startAfterDocument(startAfterDocument);
+    }
+
+    return query.get();
+  }
+
   /// Send a message
   Future<void> sendMessage(
       String chatId, Message message, String receiverId) async {
     final chatRef = _db.collection('chats').doc(chatId);
     final messagesRef = chatRef.collection('messages');
 
-    await messagesRef.add(message.toMap());
+    // Get sender's name for denormalization
+    final senderInfo = await getUserBasicInfo(message.senderId);
+    final messageWithSenderName = Message(
+      id: message.id,
+      senderId: message.senderId,
+      senderName: senderInfo['name'] ?? 'Unknown User',
+      content: message.content,
+      type: message.type,
+      timestamp: message.timestamp,
+      isRead: message.isRead,
+    );
+
+    await messagesRef.add(messageWithSenderName.toMap());
 
     await chatRef.update({
       'lastMessage': message.type == MessageType.text
@@ -387,5 +481,153 @@ class FirestoreService {
     await _db.collection('chats').doc(chatId).update({
       'unreadCounts.$userId': 0,
     });
+  }
+
+  /// Fetch messages that come after the given document (in ascending order by timestamp)
+  /// Used for listening to new messages
+  Future<QuerySnapshot> fetchMessagesAfter({
+    required String chatId,
+    required int limit,
+    required DocumentSnapshot afterDocument,
+  }) async {
+    Query query = _db
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('timestamp', descending: false) // ascending
+        .startAfterDocument(afterDocument);
+    return query.limit(limit).get();
+  }
+
+  /// Fetch messages that come before the given document (in ascending order by timestamp)
+  /// Used for loading older messages
+  Future<QuerySnapshot> fetchMessagesBefore({
+    required String chatId,
+    required int limit,
+    required DocumentSnapshot beforeDocument,
+  }) async {
+    Query query = _db
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('timestamp', descending: false) // ascending
+        .endBeforeDocument(beforeDocument);
+    return query.limit(limit).get();
+  }
+
+  // ─── REPORTS ────────────────────────────────────────────────────────────────
+
+  /// Reports a user for inappropriate behavior or content.
+  /// Throws an exception if validation fails or if a duplicate report exists within the cooldown period.
+  Future<void> reportUser({
+    required String reporterId,
+    required String reportedUserId,
+    required String reason,
+    required String description,
+    String? evidenceUrl, // Optional: URL to stored evidence (e.g., screenshot)
+  }) async {
+    debugPrint('FirestoreService.reportUser called: reporterId=$reporterId, reportedUserId=$reportedUserId, reason=$reason');
+    // 1. Validate inputs
+    if (reporterId == reportedUserId) {
+      debugPrint('FirestoreService: Self-report attempt blocked');
+      throw Exception('You cannot report yourself.');
+    }
+    if (reason.trim().isEmpty) {
+      debugPrint('FirestoreService: Reason empty');
+      throw Exception('Please provide a reason for the report.');
+    }
+    if (description.trim().isEmpty) {
+      debugPrint('FirestoreService: Description empty');
+      throw Exception('Please provide a description of the issue.');
+    }
+    // Optional: validate reason against a list of allowed reasons if desired
+
+    // 2. Check for duplicate report within the cooldown window
+    final cutoff = DateTime.now().subtract(_reportCooldown);
+    debugPrint('FirestoreService: Checking for recent reports since $cutoff');
+    final recentReports = await _db
+        .collection('reports')
+        .where('reporterId', isEqualTo: reporterId)
+        .where('reportedUserId', isEqualTo: reportedUserId)
+        .where('createdAt', isGreaterThan: Timestamp.fromDate(cutoff))
+        .limit(1)
+        .get();
+
+    if (recentReports.docs.isNotEmpty) {
+      debugPrint('FirestoreService: Recent report found, blocking duplicate');
+      throw Exception(
+          'You have already reported this user recently. Please wait before submitting another report.');
+    }
+
+    // 3. Create the report document
+    // Note: Firestore automatically creates the 'reports' collection if it doesn't exist
+    final reportRef = _db.collection('reports').doc();
+    debugPrint('FirestoreService: Creating report document with ID ${reportRef.id}');
+    final reportData = ReportModel(
+      id: reportRef.id,
+      reporterId: reporterId,
+      reportedUserId: reportedUserId,
+      reason: reason.trim(),
+      description: description.trim(),
+      evidenceUrl: evidenceUrl,
+      status: 'Pending', // initial status
+      reviewedBy: null,
+      reviewedAt: null,
+      resolutionNote: null,
+    );
+
+    try {
+      await reportRef.set(reportData.toMap());
+      debugPrint('FirestoreService: Report saved successfully');
+    } catch (e) {
+      debugPrint('FirestoreService: Error saving report: $e');
+      rethrow;
+    }
+  }
+
+  /// Updates the status of a report (typically called by a moderator/admin).
+  /// [reviewedBy] is the ID of the moderator performing the review.
+  /// [resolutionNote] is optional notes about the outcome.
+  Future<void> updateReportStatus({
+    required String reportId,
+    required String status, // Expected: 'Pending', 'Under Review', 'Resolved', 'Rejected'
+    String? reviewedBy,
+    String? resolutionNote,
+  }) async {
+    // Validate status
+    final validStatuses = ['Pending', 'Under Review', 'Resolved', 'Rejected'];
+    if (!validStatuses.contains(status)) {
+      throw Exception('Invalid status: $status');
+    }
+
+    final updateData = {
+      'status': status,
+      if (reviewedBy != null) 'reviewedBy': reviewedBy,
+      if (reviewedBy != null) 'reviewedAt': FieldValue.serverTimestamp(),
+      if (resolutionNote != null) 'resolutionNote': resolutionNote,
+    };
+
+    await _db.collection('reports').doc(reportId).update(updateData);
+  }
+
+  /// Optional: Stream reports for moderation UI (e.g., for admins/mods)
+  /// [limit] is optional; if null, no limit.
+  Stream<List<ReportModel>> streamReportsModeration({int? limit}) {
+    var query = _db.collection('reports').orderBy('createdAt', descending: true);
+    if (limit != null) {
+      query = query.limit(limit);
+    }
+    return query.snapshots().map((snapshot) {
+      return snapshot.docs
+          .map((doc) => ReportModel.fromMap(doc.data(), doc.id))
+          .toList();
+    });
+  }
+
+  /// Optional: Get a single report by ID
+  Future<ReportModel?> getReportById(String reportId) async {
+    final doc = await _db.collection('reports').doc(reportId).get();
+    if (!doc.exists) return null;
+    return ReportModel.fromMap(doc.data()!, doc.id);
   }
 }

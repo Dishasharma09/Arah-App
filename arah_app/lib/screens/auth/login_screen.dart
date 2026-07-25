@@ -9,6 +9,7 @@ import '../../provider/home_provider.dart';
 import '../../provider/order_provider.dart';
 import '../home/home_screen.dart';
 import '../home/seller_home_screen.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../onboarding/profile_setup_screen.dart';
 import 'signup_screen.dart';
 
@@ -118,6 +119,63 @@ class _LoginScreenState extends State<LoginScreen> {
     if (error.contains('invalid-email')) return 'Please enter a valid email.';
     if (error.contains('too-many-requests')) return 'Too many attempts. Try again later.';
     return 'Sign in failed. Please try again.';
+  }
+
+  Future<void> _resetPassword() async {
+    if (_emailCtrl.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter your email to reset password')),
+      );
+      return;
+    }
+
+    if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w]{2,4}$').hasMatch(_emailCtrl.text)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter a valid email')),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      // ActionCodeSettings to handle the link in-app
+      final ActionCodeSettings actionCodeSettings = ActionCodeSettings(
+        // URL you want the link to point to when opened in a browser.
+        // Must be added to authorized domains in Firebase console.
+        url: 'https://arahapp.example.com/resetPassword',
+        // Set to true to open the link in the app if installed.
+        handleCodeInApp: true,
+        // iOS bundle ID (if you have an iOS app)
+        iOSBundleId: 'com.example.arahApp',
+        // Android package name (if you have an Android app)
+        androidPackageName: 'com.example.arahApp',
+        // Minimum version for Android (optional)
+        androidMinimumVersion: '12',
+      );
+
+      await _authService.sendPasswordResetEmail(_emailCtrl.text, actionCodeSettings: actionCodeSettings);
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Password reset email sent. Please check your inbox.'),
+          backgroundColor: AppTheme.successGreen,
+        ),
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: ${e.message}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Something went wrong. Please try again.')),
+      );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   @override
@@ -254,6 +312,21 @@ class _LoginScreenState extends State<LoginScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: _isLoading ? null : _resetPassword,
+                      child: const Text(
+                        'Forgot password?',
+                        style: TextStyle(
+                          color: AppTheme.arahPurple,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
                   Text(
                     "Don't have an account? ",
                     style: TextStyle(color: Colors.blueGrey.shade500, fontSize: 14),
