@@ -14,16 +14,24 @@ service cloud.firestore {
              request.resource.data.reporterId == request.auth.uid;
     }
 
+    // Helper: validate string fields are not empty
+    function isNonEmptyString(value) {
+      return value is string && value.size() > 0;
+    }
+
     // Reports collection
     match /reports/{reportId} {
       // Allow anyone signed in to create a report, with validation
       allow create: if request.auth != null
-                    && request.resource.data.reporterId == request.auth.uid // reporter must be themselves
-                    && request.resource.data.reportedUserId != request.auth.uid // cannot report themselves
-                    && request.resource.data.reason is string && request.resource.data.reason.size() > 0
-                    && request.resource.data.description is string && request.resource.data.description.size() > 0
+                    && isNonEmptyString(request.resource.data.reason)
+                    && isNonEmptyString(request.resource.data.description)
+                    // reporter must be themselves
+                    && request.resource.data.reporterId == request.auth.uid
+                    // cannot report themselves
+                    && request.resource.data.reportedUserId != request.auth.uid
                     // optional evidenceUrl: if present must be string
-                    && (request.resource.data.evidenceUrl == null || request.resource.data.evidenceUrl is string)
+                    && (request.resource.data.evidenceUrl == null ||
+                        request.resource.data.evidenceUrl is string)
                     // status must be one of the allowed values on creation (default to Pending)
                     && (request.resource.data.status == null ||
                         request.resource.data.status in ['Pending', 'Under Review', 'Resolved', 'Rejected'])
@@ -31,7 +39,7 @@ service cloud.firestore {
                     // We allow createdAt to be set ONLY if it's the server timestamp sentinel value
                     && !(request.resource.data.keys().hasAny(['reviewedBy', 'reviewedAt', 'resolutionNote']))
                     && (request.resource.data.createdAt == null ||
-                        request.resource.data.createdAt == request.time); // Only allow server timestamp
+                        request.resource.data.createdAt == request.time);
 
       // Allow read if user is the reporter OR a moderator/admin
       allow get, list: if request.auth != null
@@ -45,21 +53,212 @@ service cloud.firestore {
                     // Validate new status if present
                     && (request.resource.data.status == null ||
                         request.resource.data.status in ['Pending', 'Under Review', 'Resolved', 'Rejected'])
-                    // If reviewedBy is set, it must be a string
-                    && (request.resource.data.reviewedBy == null || request.resource.data.reviewedBy is string)
+                    // If reviewedBy is set, it must be a string and not empty
+                    && (request.resource.data.reviewedBy == null ||
+                        isNonEmptyString(request.resource.data.reviewedBy))
                     // If reviewedAt is set, it must be a timestamp
-                    && (request.resource.data.reviewedAt == null || request.resource.data.reviewedAt is timestamp)
+                    && (request.resource.data.reviewedAt == null ||
+                        request.resource.data.reviewedAt is timestamp)
                     // If resolutionNote is set, it must be a string
-                    && (request.resource.data.resolutionNote == null || request.resource.data.resolutionNote is string);
+                    && (request.resource.data.resolutionNote == null ||
+                        request.resource.data.resolutionNote is string);
 
-      // Delete: only moderators/admins can delete (optional)
+      // Delete: only moderators/admins can delete
       allow delete: if request.auth != null && isModeratorOrAdmin();
     }
 
-    // Optional: Users collection rules (if you want to ensure users can read their own data)
+    // Users collection rules
     match /users/{userId} {
       allow read: if request.auth != null && request.auth.uid == userId;
-      // Write rules for users would be elsewhere (e.g., profile updates)
+      allow update: if request.auth != null && request.auth.uid == userId;
+      // Prevent creation/deletion of user documents through client
+      allow create, delete: if false;
+    }
+
+    // Chats collection
+    match /chats/{chatId} {
+      allow read: if request.auth != null
+                  && resource.data.participants.hasAll([request.auth.uid]);
+
+      allow create: if request.auth != null
+                    && request.resource.data.participants.hasAll([request.auth.uid])
+                    // Ensure we have exactly 2 participants for 1:1 chats
+                    && request.resource.data.participants.size() == 2
+                    // Initialize required fields
+                    && request.resource.data.lastMessage == ''
+                    && request.resource.data.lastMessageTimestamp == request.time
+                    && request.resource.data.unreadCounts.size() == 2
+                    && request.resource.data.unreadCounts.hasAll([
+                      request.resource.data.participants[0],
+                      request.resource.data.participants[1]
+                    ])
+                    // Initialize unread counts to 0
+                    && request.resource.data.uncondensedValues() == null
+                    && request.resource.data.unreadCounts[request.resource.data.participants[0]] == 0
+                    && request.resource.data.unreadCounts[request.resource.data.participants[1]] == 0;
+
+      allow update: if request.auth != null
+                    && resource.data.participants.hasAll([request.auth.uid])
+                    // Only allow updating specific fields
+                    && request.resource.data.keys().hasOnly([
+                      'lastMessage',
+                      'lastMessageTimestamp',
+                      'unreadCounts',
+                      'isAssigned',
+                      'taskId'
+                    ])
+                    // Validate unreadCounts structure
+                    && (request.resource.data.unreadCounts.keys().size() == 2)
+                    && request.resource.data.unreadCounts.hasAll([
+                      resource.data.participants[0],
+                      resource.data.participants[1]
+                    ])
+                    // Ensure unread counts are non-negative
+                    && request.resource.data.unreadCounts.values().all(
+                      count => count is int && count >= 0
+                    );
+
+      allow delete: if false; // Prevent deletion of chat history
+    }
+
+    // Messages subcollection under chats
+    match /chats/{chatId}/messages/{messageId} {
+      allow read: if request.auth != null
+                  && get(/databases/$(database)/documents/chats/$(chatId)).data.participants.hasAll([request.auth.uid]);
+
+      allow create: if request.auth != null
+                    && get(/databases/$(database)/documents/chats/$(chatId)).data.participants.hasAll([request.auth.uid])
+                    // Validate message fields
+                    && request.resource.data.senderId == request.auth.uid
+                    && isNonEmptyString(request.resource.data.content)
+                    && request.resource.data.type in ['text', 'image', 'file']
+                    && request.resource.data.timestamp == request.time
+                    && request.resource.data.isRead == false;
+
+      allow update: if request.auth != null
+                    && get(/databases/$(database)/documents/chats/$(chatId)).data.participants.hasAll([request.auth.uid])
+                    // Only allow updating isRead field (for marking as read)
+                    && request.resource.data.keys().hasOnly(['isRead'])
+                    && request.resource.data.isRead == true;
+
+      allow delete: if false; // Prevent deletion of message history
+    }
+
+    // Tasks collection
+    match /tasks/{taskId} {
+      allow read: if true; // Tasks are publicly visible
+
+      allow create: if request.auth != null
+                    && isNonEmptyString(request.resource.data.title)
+                    && isNonEmptyString(request.resource.data.description)
+                    && isNonEmptyString(request.resource.data.price)
+                    && request.resource.data.buyerId == request.auth.uid
+                    // Initialize required fields
+                    && request.resource.data.status == 'open'
+                    && request.resource.data.sellerId == ''
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.orderTakers.size() == 0
+                    && request.resource.data.orderTakerNames.size() == 0;
+
+      allow update: if request.auth != null
+                    && (resource.data.buyerId == request.auth.uid || // Buyer can update
+                        resource.data.sellerId == request.auth.uid) // Assigned seller can update
+                    // Only allow updating specific fields
+                    && request.resource.data.keys().hasOnly([
+                      'title',
+                      'description',
+                      'price',
+                      'status',
+                      'sellerId',
+                      'deadline',
+                      'isBeginnerFriendly',
+                      'category',
+                      'budgetType',
+                      'tags'
+                    ])
+                    // Validate status transitions
+                    && (resource.data.status in ['open', 'in_progress', 'completed'])
+                    && (request.resource.data.status in ['open', 'in_progress', 'completed'])
+                    // Prevent going backwards in status (except from completed to in_progress for disputes)
+                    && ((resource.data.status == 'open' && request.resource.data.status in ['open', 'in_progress']) ||
+                        (resource.data.status == 'in_progress' && request.resource.data.status in ['in_progress', 'completed']) ||
+                        (resource.data.status == 'completed' && request.resource.data.status == 'completed'))
+                    // If assigning a seller, ensure they exist
+                    && (request.resource.data.sellerId == '' ||
+                        exists(/databases/$(database)/documents/users/$(request.resource.data.sellerId)));
+
+      allow delete: if false; // Prevent deletion of task history
+    }
+
+    // Orders collection
+    match /orders/{orderId} {
+      allow read: if request.auth != null
+                  && (get(/databases/$(database)/documents/orders/$(orderId)).data.buyerId == request.auth.uid ||
+                      get(/databases/$(database)/documents/orders/$(orderId)).data.sellerId == request.auth.uid);
+
+      allow create: if request.auth != null
+                    && request.resource.data.buyerId == request.auth.uid
+                    && isNonEmptyString(request.resource.data.title)
+                    && isNonEmptyString(request.resource.data.price)
+                    && request.resource.data.status == 'Pending'
+                    && request.resource.data.ratedByBuyer == false
+                    && request.resource.data.ratedBySeller == false
+                    && request.resource.data.createdAt == request.time;
+
+      allow update: if request.auth != null
+                    && (resource.data.buyerId == request.auth.uid || // Buyer can update
+                        resource.data.sellerId == request.auth.uid) // Seller can update
+                    // Only allow updating specific fields
+                    && request.resource.data.keys().hasOnly([
+                      'status',
+                      'ratedByBuyer',
+                      'ratedBySeller',
+                      'buyerName',
+                      'sellerName'
+                    ])
+                    // Validate status transitions
+                    && request.resource.data.status in ['Pending', 'Accepted', 'In Progress', 'Completed', 'Cancelled']
+                    && (request.resource.data.status == 'Pending' ||
+                        resource.data.status == 'Pending' ||
+                        resource.data.status in ['Accepted', 'In Progress', 'Completed', 'Cancelled'])
+                    // Only buyer can mark as ratedByBuyer, only seller can mark as ratedBySeller
+                    && (request.resource.data.ratedByBuyer == true ||
+                        request.resource.data.ratedByBuyer == false ||
+                        request.auth.uid == resource.data.buyerId)
+                    && (request.resource.data.ratedBySeller == true ||
+                        request.resource.data.ratedBySeller == false ||
+                        request.auth.uid == resource.data.sellerId);
+
+      allow delete: if false; // Prevent deletion of order history
+    }
+
+    // Ratings subcollection under users
+    match /users/{userId}/ratings/{ratingId} {
+      allow read: if true; // Ratings are publicly visible
+
+      allow create: if request.auth != null
+                    && request.resource.data.raterId == request.auth.uid
+                    // Note: Using 'ratedUserId' field instead of 'rateeId' to match our data model
+                    && request.resource.data.ratedUserId == userId
+                    && request.resource.data.orderId != ''
+                    // Accept both int and double for rating (1-5 range)
+                    && (request.resource.data.rating is int ||
+                        request.resource.data.rating is float)
+                    && request.resource.data.rating >= 1
+                    && request.resource.data.rating <= 5
+                    // Allow server timestamp for createdAt
+                    && (request.resource.data.createdAt == null ||
+                        request.resource.data.createdAt == request.time)
+                    // Optional review text with length limit
+                    && (request.resource.data.reviewText == null ||
+                        request.resource.data.reviewText is string)
+                    && request.resource.data.reviewText.size() <= 500
+                    // Optional isBuyerRating field
+                    && (request.resource.data.isBuyerRating == null ||
+                        request.resource.data.isBuyerRating is bool);
+
+      allow update: if false; // Ratings should be immutable after creation
+      allow delete: if false; // Prevent deletion of ratings
     }
   }
 }

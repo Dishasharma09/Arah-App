@@ -11,6 +11,8 @@ class UserModel {
   final String githubUrl;
   final String linkedinUrl;
   final bool isProfilePublic;
+  final double avgRating; // Average rating (0-5)
+  final int ratingCount; // Total number of ratings received
 
   UserModel({
     required this.id,
@@ -25,6 +27,8 @@ class UserModel {
     this.githubUrl = '',
     this.linkedinUrl = '',
     this.isProfilePublic = true,
+    this.avgRating = 0.0,
+    this.ratingCount = 0,
   });
 
   factory UserModel.fromMap(Map<String, dynamic> map, String id) {
@@ -41,6 +45,8 @@ class UserModel {
       githubUrl: map['githubUrl'] ?? '',
       linkedinUrl: map['linkedinUrl'] ?? '',
       isProfilePublic: map['isProfilePublic'] ?? true,
+      avgRating: (map['avgRating'] as num?)?.toDouble() ?? 0.0,
+      ratingCount: (map['ratingCount'] as int?) ?? 0,
     );
   }
 
@@ -57,6 +63,8 @@ class UserModel {
       'githubUrl': githubUrl,
       'linkedinUrl': linkedinUrl,
       'isProfilePublic': isProfilePublic,
+      'avgRating': avgRating,
+      'ratingCount': ratingCount,
     };
   }
 
@@ -70,6 +78,8 @@ class UserModel {
     String? linkedinUrl,
     String? currentMode,
     bool? isProfilePublic,
+    double? avgRating,
+    int? ratingCount,
   }) {
     return UserModel(
       id: id,
@@ -84,6 +94,8 @@ class UserModel {
       linkedinUrl: linkedinUrl ?? this.linkedinUrl,
       currentMode: currentMode ?? this.currentMode,
       isProfilePublic: isProfilePublic ?? this.isProfilePublic,
+      avgRating: avgRating ?? this.avgRating,
+      ratingCount: ratingCount ?? this.ratingCount,
     );
   }
 }

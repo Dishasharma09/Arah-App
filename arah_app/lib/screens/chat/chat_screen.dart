@@ -43,6 +43,16 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isAssigning = false;     // Tracks assignment in progress
   String _resolvedChatId = '';   // Actual chatId (may be created on the fly)
 
+  // Pagination and real-time fields
+  List<Message> _messages = [];
+  ScrollController _scrollController = ScrollController();
+  DocumentSnapshot? _oldestMessageDoc; // The document of the oldest message in our list (for loading older messages)
+  DocumentSnapshot? _latestMessageDoc; // The document of the latest message in our list (for real-time new messages)
+  bool _isLoadingMore = false;
+  bool _hasMoreMessages = true; // Whether there are more older messages to load
+  StreamSubscription<QuerySnapshot>? _newMessagesSubscription;
+  bool _isInitialLoadComplete = false;
+
   @override
   void initState() {
     super.initState();
@@ -50,6 +60,14 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initChat();
     });
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _scrollController.dispose();
+    _newMessagesSubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> _initChat() async {
@@ -84,15 +102,160 @@ class _ChatScreenState extends State<ChatScreen> {
 
       // Mark messages as read
       _firestoreService.markMessagesAsRead(chatId, uid);
+
+      // Load the first page of messages (most recent 20)
+      await _loadFirstPage();
+
+      // Set up the real-time listener for new messages
+      _setupNewMessagesListener();
     } catch (e) {
       debugPrint('ChatScreen initChat error: $e');
+      if (mounted) {
+        setState(() {
+          _isInitialLoadComplete = true; // To avoid showing spinner forever on error
+        });
+      }
     }
   }
 
-  @override
-  void dispose() {
-    _messageController.dispose();
-    super.dispose();
+  Future<void> _loadFirstPage() async {
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+    final uid = userProvider.uid;
+    if (uid.isEmpty || _resolvedChatId.isEmpty) return;
+
+    try {
+      // Query for the most recent 20 messages (newest first)
+      final querySnapshot = await _firestoreService._db
+          .collection('chats')
+          .doc(_resolvedChatId)
+          .collection('messages')
+          .orderBy('timestamp', descending: true)
+          .limit(20)
+          .get();
+
+      if (querySnapshot.docs.isEmpty) {
+        setState(() {
+          _messages = [];
+          _oldestMessageDoc = null;
+          _latestMessageDoc = null;
+          _hasMoreMessages = false;
+          _isInitialLoadComplete = true;
+        });
+        return;
+      }
+
+      // Convert to messages and reverse to get ascending order (oldest first)
+      final List<Message> messages = querySnapshot.docs
+          .map((doc) => Message.fromMap(doc.data(), doc.id))
+          .toList();
+
+      // Reverse to get ascending order (oldest first)
+      messages.reverse();
+
+      setState(() {
+        _messages = messages;
+        // The oldest message in our list is the first one (after reversing, which is the last in the original query)
+        _oldestMessageDoc = querySnapshot.docs.last; // Last in the original query (newest first) is the oldest of the 20
+        // The latest message in our list is the last one (after reversing, which is the first in the original query)
+        _latestMessageDoc = querySnapshot.docs.first; // First in the original query (newest first) is the newest of the 20
+        _isInitialLoadComplete = true;
+      });
+    } catch (e) {
+      debugPrint('Error loading first page: $e');
+      if (mounted) {
+        setState(() {
+          _isInitialLoadComplete = true; // To avoid showing spinner forever on error
+        });
+      }
+    }
+  }
+
+  void _setupNewMessagesListener() {
+    if (_latestMessageDoc == null || !mounted) return;
+
+    // Listen for messages newer than the latest message we have
+    final newMessagesStream = _firestoreService._db
+        .collection('chats')
+        .doc(_resolvedChatId)
+        .collection('messages')
+        .orderBy('timestamp', descending: false) // ascending
+        .startAfterDocument([_latestMessageDoc])
+        .snapshots();
+
+    _newMessagesSubscription = newMessagesStream.listen((snapshot) {
+      if (!mounted) return;
+
+      final List<Message> newMessages = snapshot.docs
+          .map((doc) => Message.fromMap(doc.data(), doc.id))
+          .toList();
+
+      if (newMessages.isNotEmpty) {
+        setState(() {
+          // Add new messages to the end of the list
+          _messages.addAll(newMessages);
+          // Update the latest message document to the last one in the new batch
+          _latestMessageDoc = snapshot.docs.last;
+          // Scroll to the bottom to show the new message
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        });
+      }
+    });
+  }
+
+  Future<void> _loadMoreMessages() async {
+    if (!_hasMoreMessages || _isLoadingMore || _oldestMessageDoc == null || !mounted) return;
+
+    setState(() {
+      _isLoadingMore = true;
+    });
+
+    try {
+      // Query for messages older than the oldest message we have
+      final querySnapshot = await _firestoreService._db
+          .collection('chats')
+          .doc(_resolvedChatId)
+          .collection('messages')
+          .orderBy('timestamp', descending: false) // ascending
+          .endBeforeDocument([_oldestMessageDoc!])
+          .limit(20)
+          .get();
+
+      if (querySnapshot.docs.isEmpty) {
+        setState(() {
+          _hasMoreMessages = false;
+          _isLoadingMore = false;
+        });
+        return;
+      }
+
+      // Convert to messages (they are in ascending order: oldest first)
+      final List<Message> olderMessages = querySnapshot.docs
+          .map((doc) => Message.fromMap(doc.data(), doc.id))
+          .toList();
+
+      setState(() {
+        // Prepend the older messages to the list
+        _messages = [...olderMessages, ..._messages];
+        // Update the oldest message document to the first one in the older batch
+        _oldestMessageDoc = querySnapshot.docs.first;
+        _isLoadingMore = false;
+        // If we got less than 20, assume no more messages
+        if (querySnapshot.docs.length < 20) {
+          _hasMoreMessages = false;
+        }
+      });
+    } catch (e) {
+      debugPrint('Error loading more messages: $e');
+      if (mounted) {
+        setState(() {
+          _isLoadingMore = false;
+        });
+      }
+    }
   }
 
   void _sendMessage() async {
@@ -100,22 +263,41 @@ class _ChatScreenState extends State<ChatScreen> {
     if (text.isEmpty || _resolvedChatId.isEmpty) return;
 
     final userProvider = Provider.of<UserProvider>(context, listen: false);
+    final senderId = userProvider.uid;
+    final senderName = userProvider.name;
+
+    if (senderId.isEmpty) return;
+
+    // Create a temporary message ID
+    final messageId = _firestoreService._db
+        .collection('chats')
+        .doc(_resolvedChatId)
+        .collection('messages')
+        .doc()
+        .id;
 
     final message = Message(
-      id: '',
-      senderId: userProvider.uid,
+      id: messageId,
+      senderId: senderId,
+      senderName: senderName,
       content: text,
       type: MessageType.text,
       timestamp: DateTime.now(),
       isRead: false,
     );
 
-    _messageController.clear();
-    await _firestoreService.sendMessage(
-        _resolvedChatId, message, widget.otherUserId);
+    try {
+      await _firestoreService.sendMessage(_resolvedChatId, message, widget.otherUserId);
+      _messageController.clear();
+    } catch (e) {
+      debugPrint('Error sending message: $e');
+      if (mounted) {
+        _showToast('Failed to send message');
+      }
+    }
   }
 
-  void _pickAndUploadFile() async {
+  Future<void> _pickAndUploadFile() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['jpg', 'png', 'pdf', 'doc', 'docx', 'zip'],
@@ -133,6 +315,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final message = Message(
           id: '',
           senderId: userProvider.uid,
+          senderName: userProvider.name,
           content: fileUrl,
           type: MessageType.file,
           timestamp: DateTime.now(),
@@ -218,6 +401,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final systemMsg = Message(
         id: '',
         senderId: buyerId,
+        senderName: buyerName,
         content:
             '✅ Task assigned to $sellerName! Check your Orders page to track progress.',
         type: MessageType.text,
@@ -462,64 +646,52 @@ class _ChatScreenState extends State<ChatScreen> {
                 ? const Center(
                     child: CircularProgressIndicator(
                         color: AppTheme.arahPurple))
-                : StreamBuilder<List<Message>>(
-                    stream:
-                        _firestoreService.fetchMessages(_resolvedChatId),
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState ==
-                          ConnectionState.waiting) {
-                        return const Center(
-                            child: CircularProgressIndicator(
-                                color: AppTheme.arahPurple));
-                      }
-                      if (snapshot.hasError) {
-                        return Center(
-                            child: Text("Error: ${snapshot.error}"));
-                      }
-
-                      final messages = snapshot.data ?? [];
-
-                      if (messages.isEmpty) {
-                        return Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.chat_bubble_outline,
-                                  size: 48,
-                                  color: Colors.blueGrey.shade200),
-                              const SizedBox(height: 12),
-                              Text(
-                                'Start the conversation!',
-                                style: TextStyle(
-                                  color: Colors.blueGrey.shade400,
-                                  fontSize: 16,
+                : !_isInitialLoadComplete
+                    ? const Center(
+                        child: CircularProgressIndicator(
+                            color: AppTheme.arahPurple))
+                    : Column(
+                        children: [
+                          // Load more button
+                          if (_hasMoreMessages && !_isLoadingMore)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8.0),
+                              child: ElevatedButton(
+                                onPressed: _loadMoreMessages,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppTheme.arahPurple,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 8),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(20)),
+                                ),
+                                child: const Text(
+                                  'Load More Messages',
+                                  style: TextStyle(fontSize: 12),
                                 ),
                               ),
-                            ],
+                            ),
+                          // Message list
+                          Expanded(
+                            child: ListView.builder(
+                              controller: _scrollController,
+                              itemCount: _messages.length,
+                              itemBuilder: (context, index) {
+                                final message = _messages[index];
+                                final isMe = message.senderId == currentUserId;
+
+                                if (message.type == MessageType.file) {
+                                  return _buildFileBubble(
+                                      message.content, isMe, message.timestamp);
+                                }
+                                return _buildTextBubble(
+                                    message.content, isMe, message.timestamp, message.senderName);
+                              },
+                            ),
                           ),
-                        );
-                      }
-
-                      return ListView.builder(
-                        reverse: true,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 20),
-                        itemCount: messages.length,
-                        itemBuilder: (context, index) {
-                          final message =
-                              messages[messages.length - 1 - index];
-                          final isMe = message.senderId == currentUserId;
-
-                          if (message.type == MessageType.file) {
-                            return _buildFileBubble(
-                                message.content, isMe, message.timestamp);
-                          }
-                          return _buildTextBubble(
-                              message.content, isMe, message.timestamp);
-                        },
-                      );
-                    },
-                  ),
+                        ],
+                      ),
           ),
           if (_isUploading)
             const Padding(
@@ -533,16 +705,14 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildTextBubble(String text, bool isMe, DateTime timestamp) {
+  Widget _buildTextBubble(String text, bool isMe, DateTime timestamp, String senderName) {
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
-        ),
+        constraints: const BoxConstraints(),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
           decoration: BoxDecoration(
             color: isMe ? AppTheme.arahPurple : Colors.white,
             borderRadius: BorderRadius.only(
@@ -561,39 +731,39 @@ class _ChatScreenState extends State<ChatScreen> {
               )
             ],
           ),
-          child: Stack(
+          child: Column(
+            crossAxisAlignment:
+                isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
             children: [
-              Padding(
-                padding: const EdgeInsets.only(bottom: 16, right: 40),
-                child: Text(
-                  text,
-                  style: TextStyle(
-                    color: isMe ? Colors.white : AppTheme.navyBlue,
-                    fontSize: 15,
-                    height: 1.4,
-                  ),
+              Text(
+                text,
+                style: TextStyle(
+                  color: isMe ? Colors.white : Colors.black,
+                  fontSize: 16,
                 ),
               ),
-              Positioned(
-                bottom: 0,
-                right: 0,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment:
+                    isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+                children: [
+                  if (!isMe)
                     Text(
-                      DateFormat('HH:mm').format(timestamp),
+                      senderName,
                       style: TextStyle(
-                        color: isMe ? Colors.white70 : Colors.grey.shade600,
-                        fontSize: 11,
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
-                    if (isMe) ...[
-                      const SizedBox(width: 3),
-                      const Icon(Icons.done_all,
-                          size: 14, color: Colors.white70),
-                    ]
-                  ],
-                ),
+                  Text(
+                    DateFormat('hh:mm a').format(timestamp),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: isMe ? Colors.white70 : Colors.grey[600],
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
