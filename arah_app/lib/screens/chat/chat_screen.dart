@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../app/theme/app_theme.dart';
 import '../../models/message_model.dart';
 import '../../provider/user_provider.dart';
@@ -247,6 +249,44 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _showToast(String message) {
+    if (!mounted) return;
+    try {
+      final overlay = Overlay.of(context);
+      if (!mounted) return;
+      final entry = OverlayEntry(
+        builder: (context) => Positioned(
+          bottom: MediaQuery.of(context).size.height * 0.1,
+          child: Center(
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.8),
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: Text(
+                  message,
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      overlay.insert(entry);
+      Future.delayed(const Duration(seconds: 2)).then((_) {
+        if (mounted) {
+          entry.remove();
+        }
+      });
+    } catch (e) {
+      // Ignore errors related to overlay
+      if (kDebugMode) print('Error showing toast: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentUserId = Provider.of<UserProvider>(context).uid;
@@ -367,6 +407,19 @@ class _ChatScreenState extends State<ChatScreen> {
                   value: 'report', child: Text("Report User")),
               const PopupMenuItem(value: 'block', child: Text("Block User")),
             ],
+            onSelected: (value) async {
+              if (value == 'report') {
+                // Show report dialog
+                await _showReportDialog();
+              } else if (value == 'block') {
+                // TODO: Implement block user functionality
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Block user functionality coming soon')),
+                  );
+                }
+              }
+            },
           ),
         ],
       ),
@@ -697,6 +750,119 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Future<void> _showReportDialog() async {
+    final TextEditingController descriptionController = TextEditingController();
+    String? selectedOption;
+
+    final List<String> reportReasons = [
+      'Harassment or bullying',
+      'Hate speech or discrimination',
+      'Scam or fraud',
+      'Inappropriate content',
+      'Spam',
+      'Other'
+    ];
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Report User'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                value: selectedOption,
+                decoration: const InputDecoration(
+                  labelText: 'Reason for reporting',
+                  border: OutlineInputBorder(),
+                ),
+                items: reportReasons.map((reason) => DropdownMenuItem(
+                  value: reason,
+                  child: Text(reason),
+                )).toList(),
+                onChanged: (value) {
+                  setState(() {
+                    selectedOption = value;
+                  });
+                },
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: descriptionController,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: 'Description',
+                  hintText: 'Please provide details about the issue...',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              debugPrint('[ReportDialog] Submit button pressed');
+              if (selectedOption == null) {
+                debugPrint('[ReportDialog] No reason selected');
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Please select a reason')),
+                  );
+                }
+                return;
+              }
+              debugPrint('[ReportDialog] Reason selected: $selectedOption');
+              debugPrint('[ReportDialog] Description: ${descriptionController.text}');
+
+              // Show loading snackbar BEFORE popping the dialog
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Submitting report...')),
+                );
+              }
+              // Close dialog
+              if (mounted) {
+                Navigator.of(context).pop();
+              }
+
+              try {
+                debugPrint('[ReportDialog] Calling reportUser...');
+                // Report the user using FirestoreService
+                await _firestoreService.reportUser(
+                  reporterId: Provider.of<UserProvider>(context, listen: false).uid,
+                  reportedUserId: widget.otherUserId,
+                  reason: selectedOption!, // We know it's not null due to the check above
+                  description: descriptionController.text,
+                );
+                debugPrint('[ReportDialog] reportUser succeeded');
+
+                if (mounted) {
+                  _showToast('Report submitted successfully');
+                }
+              } catch (e, stackTrace) {
+                debugPrint('[ReportDialog] reportUser failed: $e');
+                debugPrint('[ReportDialog] Stack trace: $stackTrace');
+                if (mounted) {
+                  _showToast('Failed to submit report: $e');
+                }
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.arahPurple,
+            ),
+            child: const Text('Submit Report'),
+          ),
+        ],
       ),
     );
   }

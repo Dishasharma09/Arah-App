@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: check if user is admin or moderator
+    function isModeratorOrAdmin() {
+      return request.auth != null &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['moderator', 'admin'];
+    }
+
+    // Helper: check if user is the reporter of the report
+    function isReporter() {
+      return request.auth != null &&
+             request.resource.data.reporterId == request.auth.uid;
+    }
+
+    // Reports collection
+    match /reports/{reportId} {
+      // Allow anyone signed in to create a report, with validation
+      allow create: if request.auth != null
+                    && request.resource.data.reporterId == request.auth.uid // reporter must be themselves
+                    && request.resource.data.reportedUserId != request.auth.uid // cannot report themselves
+                    && request.resource.data.reason is string && request.resource.data.reason.size() > 0
+                    && request.resource.data.description is string && request.resource.data.description.size() > 0
+                    // optional evidenceUrl: if present must be string
+                    && (request.resource.data.evidenceUrl == null || request.resource.data.evidenceUrl is string)
+                    // status must be one of the allowed values on creation (default to Pending)
+                    && (request.resource.data.status == null ||
+                        request.resource.data.status in ['Pending', 'Under Review', 'Resolved', 'Rejected'])
+                    // We don't want the client to set reviewedBy, reviewedAt, resolutionNote on create
+                    // We allow createdAt to be set ONLY if it's the server timestamp sentinel value
+                    && !(request.resource.data.keys().hasAny(['reviewedBy', 'reviewedAt', 'resolutionNote']))
+                    && (request.resource.data.createdAt == null ||
+                        request.resource.data.createdAt == request.time); // Only allow server timestamp
+
+      // Allow read if user is the reporter OR a moderator/admin
+      allow get, list: if request.auth != null
+                       && (isReporter() || isModeratorOrAdmin());
+
+      // Allow update only by moderators/admins, and only certain fields
+      allow update: if request.auth != null
+                    && isModeratorOrAdmin()
+                    // Only allow updating status, reviewedBy, reviewedAt, resolutionNote
+                    && request.resource.data.keys().hasOnly(['status', 'reviewedBy', 'reviewedAt', 'resolutionNote'])
+                    // Validate new status if present
+                    && (request.resource.data.status == null ||
+                        request.resource.data.status in ['Pending', 'Under Review', 'Resolved', 'Rejected'])
+                    // If reviewedBy is set, it must be a string
+                    && (request.resource.data.reviewedBy == null || request.resource.data.reviewedBy is string)
+                    // If reviewedAt is set, it must be a timestamp
+                    && (request.resource.data.reviewedAt == null || request.resource.data.reviewedAt is timestamp)
+                    // If resolutionNote is set, it must be a string
+                    && (request.resource.data.resolutionNote == null || request.resource.data.resolutionNote is string);
+
+      // Delete: only moderators/admins can delete (optional)
+      allow delete: if request.auth != null && isModeratorOrAdmin();
+    }
+
+    // Optional: Users collection rules (if you want to ensure users can read their own data)
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      // Write rules for users would be elsewhere (e.g., profile updates)
+    }
+  }
+}

@@ -139,7 +139,22 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
 
     try {
-      await _authService.sendPasswordResetEmail(_emailCtrl.text);
+      // ActionCodeSettings to handle the link in-app
+      final ActionCodeSettings actionCodeSettings = ActionCodeSettings(
+        // URL you want the link to point to when opened in a browser.
+        // Must be added to authorized domains in Firebase console.
+        url: 'https://arahapp.example.com/resetPassword',
+        // Set to true to open the link in the app if installed.
+        handleCodeInApp: true,
+        // iOS bundle ID (if you have an iOS app)
+        iOSBundleId: 'com.example.arahApp',
+        // Android package name (if you have an Android app)
+        androidPackageName: 'com.example.arahApp',
+        // Minimum version for Android (optional)
+        androidMinimumVersion: '12',
+      );
+
+      await _authService.sendPasswordResetEmail(_emailCtrl.text, actionCodeSettings: actionCodeSettings);
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(

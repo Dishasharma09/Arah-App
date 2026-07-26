@@ -31,8 +31,16 @@ class FirebaseAuthService {
   }
 
   // Send password reset email
-  Future<void> sendPasswordResetEmail(String email) async {
-    await _auth.sendPasswordResetEmail(email: email.trim());
+  Future<void> sendPasswordResetEmail(
+    String email, {
+    // Optional ActionCodeSettings for handling the link in-app
+    // If null, behaves as before (sends generic reset link)
+    ActionCodeSettings? actionCodeSettings,
+  }) async {
+    await _auth.sendPasswordResetEmail(
+      email: email.trim(),
+      actionCodeSettings: actionCodeSettings,
+    );
   }
 
   // Change password (requires recent login)

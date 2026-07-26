@@ -3,9 +3,14 @@ import '../models/message_model.dart';
 import '../models/chat_room_model.dart';
 import '../models/user_model.dart';
 import '../models/task_model.dart';
+import '../models/report_model.dart'; // Add this import
+import 'package:flutter/foundation.dart';
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
+
+  // Constant for report cooldown duration (24 hours)
+  static const Duration _reportCooldown = Duration(hours: 24);
 
   // ─── USER PROFILE ──────────────────────────────────────────────────────────
 
@@ -387,5 +392,121 @@ class FirestoreService {
     await _db.collection('chats').doc(chatId).update({
       'unreadCounts.$userId': 0,
     });
+  }
+
+  // ─── REPORTS ────────────────────────────────────────────────────────────────
+
+  /// Reports a user for inappropriate behavior or content.
+  /// Throws an exception if validation fails or if a duplicate report exists within the cooldown period.
+  Future<void> reportUser({
+    required String reporterId,
+    required String reportedUserId,
+    required String reason,
+    required String description,
+    String? evidenceUrl, // Optional: URL to stored evidence (e.g., screenshot)
+  }) async {
+    debugPrint('FirestoreService.reportUser called: reporterId=$reporterId, reportedUserId=$reportedUserId, reason=$reason');
+    // 1. Validate inputs
+    if (reporterId == reportedUserId) {
+      debugPrint('FirestoreService: Self-report attempt blocked');
+      throw Exception('You cannot report yourself.');
+    }
+    if (reason.trim().isEmpty) {
+      debugPrint('FirestoreService: Reason empty');
+      throw Exception('Please provide a reason for the report.');
+    }
+    if (description.trim().isEmpty) {
+      debugPrint('FirestoreService: Description empty');
+      throw Exception('Please provide a description of the issue.');
+    }
+    // Optional: validate reason against a list of allowed reasons if desired
+
+    // 2. Check for duplicate report within the cooldown window
+    final cutoff = DateTime.now().subtract(_reportCooldown);
+    debugPrint('FirestoreService: Checking for recent reports since $cutoff');
+    final recentReports = await _db
+        .collection('reports')
+        .where('reporterId', isEqualTo: reporterId)
+        .where('reportedUserId', isEqualTo: reportedUserId)
+        .where('createdAt', isGreaterThan: Timestamp.fromDate(cutoff))
+        .limit(1)
+        .get();
+
+    if (recentReports.docs.isNotEmpty) {
+      debugPrint('FirestoreService: Recent report found, blocking duplicate');
+      throw Exception(
+          'You have already reported this user recently. Please wait before submitting another report.');
+    }
+
+    // 3. Create the report document
+    // Note: Firestore automatically creates the 'reports' collection if it doesn't exist
+    final reportRef = _db.collection('reports').doc();
+    debugPrint('FirestoreService: Creating report document with ID ${reportRef.id}');
+    final reportData = ReportModel(
+      id: reportRef.id,
+      reporterId: reporterId,
+      reportedUserId: reportedUserId,
+      reason: reason.trim(),
+      description: description.trim(),
+      evidenceUrl: evidenceUrl,
+      status: 'Pending', // initial status
+      reviewedBy: null,
+      reviewedAt: null,
+      resolutionNote: null,
+    );
+
+    try {
+      await reportRef.set(reportData.toMap());
+      debugPrint('FirestoreService: Report saved successfully');
+    } catch (e) {
+      debugPrint('FirestoreService: Error saving report: $e');
+      rethrow;
+    }
+  }
+
+  /// Updates the status of a report (typically called by a moderator/admin).
+  /// [reviewedBy] is the ID of the moderator performing the review.
+  /// [resolutionNote] is optional notes about the outcome.
+  Future<void> updateReportStatus({
+    required String reportId,
+    required String status, // Expected: 'Pending', 'Under Review', 'Resolved', 'Rejected'
+    String? reviewedBy,
+    String? resolutionNote,
+  }) async {
+    // Validate status
+    final validStatuses = ['Pending', 'Under Review', 'Resolved', 'Rejected'];
+    if (!validStatuses.contains(status)) {
+      throw Exception('Invalid status: $status');
+    }
+
+    final updateData = {
+      'status': status,
+      if (reviewedBy != null) 'reviewedBy': reviewedBy,
+      if (reviewedBy != null) 'reviewedAt': FieldValue.serverTimestamp(),
+      if (resolutionNote != null) 'resolutionNote': resolutionNote,
+    };
+
+    await _db.collection('reports').doc(reportId).update(updateData);
+  }
+
+  /// Optional: Stream reports for moderation UI (e.g., for admins/mods)
+  /// [limit] is optional; if null, no limit.
+  Stream<List<ReportModel>> streamReportsModeration({int? limit}) {
+    var query = _db.collection('reports').orderBy('createdAt', descending: true);
+    if (limit != null) {
+      query = query.limit(limit);
+    }
+    return query.snapshots().map((snapshot) {
+      return snapshot.docs
+          .map((doc) => ReportModel.fromMap(doc.data(), doc.id))
+          .toList();
+    });
+  }
+
+  /// Optional: Get a single report by ID
+  Future<ReportModel?> getReportById(String reportId) async {
+    final doc = await _db.collection('reports').doc(reportId).get();
+    if (!doc.exists) return null;
+    return ReportModel.fromMap(doc.data()!, doc.id);
   }
 }
