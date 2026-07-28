@@ -481,7 +481,7 @@ class _ChatScreenState extends State<ChatScreen> {
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
+          maxWidth: MediaQuery.of(context).size.width * 0.8,
         ),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
@@ -503,6 +503,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 offset: const Offset(0, 2),
               )
             ],
+          ),
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.8,
           ),
           child: Column(
             crossAxisAlignment:
@@ -554,7 +557,7 @@ class _ChatScreenState extends State<ChatScreen> {
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
+          maxWidth: MediaQuery.of(context).size.width * 0.8,
         ),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
