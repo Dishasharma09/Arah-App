@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users collection - users can read/write their own profile
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if false; // Prevent accidental deletion
+    }
+
+    // Reports collection - for reporting users
+    match /reports/{reportId} {
+      // Allow authenticated users to create reports
+      allow create: if request.auth != null;
+
+      // Allow users to read only their own reports (as reporter or reported user)
+      allow get, list: if request.auth != null &&
+                      (request.resource.data.reporterId == request.auth.uid ||
+                       request.resource.data.reportedUserId == request.auth.uid);
+
+      // Allow admins/moderators to read and update reports
+      // For now, we'll allow authenticated users to update if they are the reporter
+      // In a production app, you'd have a proper admin role system
+      allow update: if request.auth != null &&
+                    request.resource.data.reporterId == request.auth.uid;
+
+      // Prevent deletion of reports (important for audit trail)
+      allow delete: if false;
+    }
+
+    // Other collections - adjust as needed based on your existing rules
+    match /tasks/{taskId} {
+      allow read: if true; // Publicly readable tasks
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null &&
+                            request.resource.data.buyerId == request.auth.uid;
+    }
+
+    match /orders/{orderId} {
+      allow read: if request.auth != null &&
+                  (request.resource.data.buyerId == request.auth.uid ||
+                   request.resource.data.sellerId == request.auth.uid);
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null &&
+                            (request.resource.data.buyerId == request.auth.uid ||
+                             request.resource.data.sellerId == request.auth.uid);
+    }
+
+    // Chats - participants can read/write
+    match /chats/{chatId} {
+      allow read, write: if request.auth != null &&
+                         request.resource.data.participants.hasAll([request.auth.uid]);
+    }
+
+    // Default deny for unspecified collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

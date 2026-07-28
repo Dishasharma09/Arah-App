@@ -540,7 +540,22 @@ class FirestoreService {
       debugPrint('FirestoreService: Description empty');
       throw Exception('Please provide a description of the issue.');
     }
-    // Optional: validate reason against a list of allowed reasons if desired
+
+    // Validate reason against allowed values
+    final validReasons = [
+      'harassment',
+      'hate_speech',
+      'fake_profile',
+      'spam',
+      'inappropriate_content',
+      'illegal_activities',
+      'other'
+    ];
+    final normalizedReason = reason.trim().toLowerCase();
+    if (!validReasons.contains(normalizedReason)) {
+      debugPrint('FirestoreService: Invalid reason provided: $reason');
+      throw Exception('Invalid reason provided. Valid reasons are: harassment, hate_speech, fake_profile, spam, inappropriate_content, illegal_activities, other');
+    }
 
     // 2. Check for duplicate report within the cooldown window
     final cutoff = DateTime.now().subtract(_reportCooldown);
@@ -567,7 +582,7 @@ class FirestoreService {
       id: reportRef.id,
       reporterId: reporterId,
       reportedUserId: reportedUserId,
-      reason: reason.trim(),
+      reason: normalizedReason, // Store normalized reason
       description: description.trim(),
       evidenceUrl: evidenceUrl,
       status: 'Pending', // initial status
