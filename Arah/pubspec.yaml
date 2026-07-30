@@ -30,6 +30,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+    
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
@@ -45,6 +46,7 @@ dependencies:
   intl: ^0.19.0
   url_launcher: ^6.3.0
   open_file: ^3.3.2
+  country_picker: ^2.0.27
 
 dev_dependencies:
   flutter_test:
@@ -108,3 +110,6 @@ flutter_launcher_icons:
   min_sdk_android: 21
   # adaptive_icon_background: "#F2F0F6"
   # adaptive_icon_foreground: "assets/images/Arah_logo.png"
+
+  dependencies:
+   country_picker: ^2.0.26

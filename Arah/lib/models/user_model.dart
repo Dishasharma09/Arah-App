@@ -10,6 +10,7 @@ class UserModel {
   final String? photoUrl;
   final String githubUrl;
   final String linkedinUrl;
+  final String country;
   final bool isProfilePublic;
 
   UserModel({
@@ -24,6 +25,7 @@ class UserModel {
     this.photoUrl,
     this.githubUrl = '',
     this.linkedinUrl = '',
+    this.country = '',
     this.isProfilePublic = true,
   });
 
@@ -40,6 +42,7 @@ class UserModel {
       photoUrl: map['photoUrl'],
       githubUrl: map['githubUrl'] ?? '',
       linkedinUrl: map['linkedinUrl'] ?? '',
+      country: map['country'] ?? '',
       isProfilePublic: map['isProfilePublic'] ?? true,
     );
   }
@@ -56,11 +59,13 @@ class UserModel {
       'photoUrl': photoUrl,
       'githubUrl': githubUrl,
       'linkedinUrl': linkedinUrl,
+      'country': country,
       'isProfilePublic': isProfilePublic,
     };
   }
 
   UserModel copyWith({
+    String? country,
     String? name,
     String? bio,
     String? experienceLevel,
@@ -76,6 +81,7 @@ class UserModel {
       email: email,
       role: role,
       name: name ?? this.name,
+      country: country ?? this.country,
       bio: bio ?? this.bio,
       experienceLevel: experienceLevel ?? this.experienceLevel,
       skills: skills ?? this.skills,
@@ -85,5 +91,6 @@ class UserModel {
       currentMode: currentMode ?? this.currentMode,
       isProfilePublic: isProfilePublic ?? this.isProfilePublic,
     );
+
   }
 }

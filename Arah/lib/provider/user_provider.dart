@@ -33,6 +33,7 @@ class UserProvider with ChangeNotifier {
   String? get photoUrl => _user?.photoUrl;
   String get githubUrl => _user?.githubUrl ?? '';
   String get linkedinUrl => _user?.linkedinUrl ?? '';
+  String get country => _user?.country ?? '';
   bool get isProfilePublic => _user?.isProfilePublic ?? true;
 
   /// Local profile image file (takes priority over photoUrl while set)
@@ -78,16 +79,18 @@ class UserProvider with ChangeNotifier {
     required String role,
     required String experienceLevel,
     required List<String> skills,
+    required String country,
   }) async {
     final newUser = UserModel(
-      id: uid,
-      name: name,
-      email: email,
-      role: role,
-      currentMode: role == 'Seller' ? 'Seller' : 'Buyer',
-      experienceLevel: experienceLevel,
-      skills: skills,
-    );
+  id: uid,
+  name: name,
+  email: email,
+  role: role,
+  currentMode: role == 'Seller' ? 'Seller' : 'Buyer',
+  experienceLevel: experienceLevel,
+  skills: skills,
+  country: country,
+);
     await _firestoreService.createUserProfile(uid, newUser.toMap());
     _user = newUser;
     notifyListeners();
@@ -121,6 +124,7 @@ class UserProvider with ChangeNotifier {
 
   Future<void> updateProfile({
     String? name,
+    String? country,
     String? bio,
     String? experienceLevel,
     List<String>? skills,
@@ -130,6 +134,7 @@ class UserProvider with ChangeNotifier {
     if (_user == null) return;
     _user = _user!.copyWith(
       name: name,
+      country: country,
       bio: bio,
       experienceLevel: experienceLevel,
       skills: skills,
@@ -145,6 +150,7 @@ class UserProvider with ChangeNotifier {
         if (skills != null) 'skills': skills,
         if (githubUrl != null) 'githubUrl': githubUrl,
         if (linkedinUrl != null) 'linkedinUrl': linkedinUrl,
+        if (country != null) 'country': country,
       });
     } catch (e) {
       debugPrint('updateProfile error: $e');

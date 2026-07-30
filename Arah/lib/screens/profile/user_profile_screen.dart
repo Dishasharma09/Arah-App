@@ -10,6 +10,8 @@ import '../../provider/user_provider.dart';
 import '../../services/auth_service.dart';
 import '../auth/login_screen.dart';
 import 'settings_screen.dart';
+// NOTE: adjust this path if edit_profile_screen.dart lives somewhere else.
+import 'edit_profile_screen.dart';
 
 class UserProfileScreen extends StatefulWidget {
   final bool isSeller;
@@ -72,6 +74,13 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     }
   }
 
+  void _goToEditProfile(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const EditProfileScreen()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final userProvider = context.watch<UserProvider>();
@@ -79,6 +88,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     final userName = userProvider.name;
     final bio = userProvider.bio;
     final photoUrl = userProvider.photoUrl;
+    final hasGithubLink = userProvider.githubUrl.isNotEmpty;
+    final hasLinkedinLink = userProvider.linkedinUrl.isNotEmpty;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -307,29 +318,56 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                     const SizedBox(height: 32),
 
                     // ─── Portfolio Links ───────────────────────────────
-                    const Text(
-                      "Portfolio & Links",
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.navyBlue,
-                        fontSize: 15,
-                      ),
+                    // Read-only here — all adding/editing/deleting of links
+                    // happens in Edit Profile. The pencil icon just deep-links
+                    // there; there is no inline "+" add affordance anymore.
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          "Portfolio & Links",
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.navyBlue,
+                            fontSize: 15,
+                          ),
+                        ),
+                        GestureDetector(
+                          onTap: () => _goToEditProfile(context),
+                          child: Icon(
+                            Icons.edit_outlined,
+                            size: 18,
+                            color: Colors.blueGrey.shade400,
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 12),
-                    _buildLinkCard(
-                      Icons.device_hub_outlined,
-                      "GitHub Profile",
-                      url: userProvider.githubUrl,
-                      onTap: () => _openLink(userProvider.githubUrl),
-                    ),
-                    const SizedBox(height: 12),
-                    _buildLinkCard(
-                      Icons.business_center_outlined,
-                      "LinkedIn Profile",
-                      isLinkedIn: true,
-                      url: userProvider.linkedinUrl,
-                      onTap: () => _openLink(userProvider.linkedinUrl),
-                    ),
+                    if (!hasGithubLink && !hasLinkedinLink)
+                      Text(
+                        "No links added yet.",
+                        style: TextStyle(
+                            color: Colors.blueGrey.shade400, fontSize: 13),
+                      )
+                    else ...[
+                      if (hasGithubLink)
+                        _buildLinkCard(
+                          Icons.device_hub_outlined,
+                          "GitHub Profile",
+                          url: userProvider.githubUrl,
+                          onTap: () => _openLink(userProvider.githubUrl),
+                        ),
+                      if (hasGithubLink && hasLinkedinLink)
+                        const SizedBox(height: 12),
+                      if (hasLinkedinLink)
+                        _buildLinkCard(
+                          Icons.business_center_outlined,
+                          "LinkedIn Profile",
+                          isLinkedIn: true,
+                          url: userProvider.linkedinUrl,
+                          onTap: () => _openLink(userProvider.linkedinUrl),
+                        ),
+                    ],
 
                     const SizedBox(height: 32),
 
@@ -508,6 +546,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     );
   }
 
+  /// Renders a single existing link. Only called for links that are already
+  /// set, so this always shows the "open" affordance — no add/"+" state.
   Widget _buildLinkCard(
     IconData icon,
     String title, {
@@ -515,9 +555,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     String url = '',
     VoidCallback? onTap,
   }) {
-    final hasLink = url.isNotEmpty;
     return GestureDetector(
-      onTap: hasLink ? onTap : null,
+      onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
         decoration: BoxDecoration(
@@ -564,22 +603,21 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                       fontSize: 14,
                     ),
                   ),
-                  if (hasLink)
-                    Text(
-                      url,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: AppTheme.arahPurple,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                  Text(
+                    url,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppTheme.arahPurple,
                     ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ],
               ),
             ),
-            Icon(
-              hasLink ? Icons.open_in_new : Icons.add,
-              color: hasLink ? AppTheme.arahPurple : Colors.grey,
+            const Icon(
+              Icons.open_in_new,
+              color: AppTheme.arahPurple,
               size: 18,
             ),
           ],
