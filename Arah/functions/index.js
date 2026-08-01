@@ -246,3 +246,115 @@ exports.revokeRefreshTokens = onCall(async (request) => {
     throw new httpsError.HttpsError('internal', 'Unable to revoke sessions', error);
   }
 });
+
+// Callable function to block a user (admin/moderator only)
+exports.blockUser = onCall(async (request) => {
+  // Check if caller is authenticated
+  if (!request.auth) {
+    throw new httpsError.HttpsError('unauthenticated', 'User must be authenticated to block users');
+  }
+
+  const callerUid = request.auth.uid;
+  const targetUid = request.data.uid;
+
+  // Validate target UID
+  if (!targetUid || typeof targetUid !== 'string' || targetUid.trim() === '') {
+    throw new httpsError.HttpsError('invalid-argument', 'Target user ID must be a non-empty string');
+  }
+
+  // Prevent self-blocking (optional - could be allowed for admins)
+  if (callerUid === targetUid) {
+    throw new httpsError.HintsError('failed-precondition', 'Users cannot block themselves');
+  }
+
+  try {
+    // First, check if the caller is an admin or moderator
+    const callerUserDoc = await db.collection('users').doc(callerUid).get();
+    if (!callerUserDoc.exists) {
+      throw new httpsError.HttpsError('not-found', 'Caller user not found');
+    }
+
+    const callerData = callerUserDoc.data();
+    const isCallerAdmin = callerData.isAdmin === true;
+    const isCallerModerator = callerData.isModerator === true;
+
+    if (!isCallerAdmin && !isCallerModerator) {
+      throw new httpsError.HttpsError('permission-denied', 'Only administrators and moderators can block users');
+    }
+
+    // Check if the target user exists
+    const targetUserDoc = await db.collection('users').doc(targetUid).get();
+    if (!targetUserDoc.exists) {
+      throw new httpsError.HttpsError('not-found', 'Target user not found');
+    }
+
+    // Block the user: set isBlocked to true and add blockedAt timestamp
+    await targetUserDoc.ref.update({
+      isBlocked: true,
+      blockedAt: FieldValue.serverTimestamp(),
+    });
+
+    console.log(`User ${targetUid} blocked by ${callerUid}`);
+    return { success: true, uid: targetUid, blockedAt: FieldValue.serverTimestamp() };
+  } catch (error) {
+    console.error('Error in blockUser:', error);
+    if (error.code === 'permission-denied' || error.code === 'not-found' || error.code === 'invalid-argument') {
+      throw error;
+    }
+    throw new httpsError.HttpsError('internal', 'Unable to block user', error);
+  }
+});
+
+// Callable function to unblock a user (admin/moderator only)
+exports.unblockUser = onCall(async (request) => {
+  // Check if caller is authenticated
+  if (!request.auth) {
+    throw new httpsError.HttpsError('unauthenticated', 'User must be authenticated to unblock users');
+  }
+
+  const callerUid = request.auth.uid;
+  const targetUid = request.data.uid;
+
+  // Validate target UID
+  if (!targetUid || typeof targetUid !== 'string' || targetUid.trim() === '') {
+    throw new httpsError.HttpsError('invalid-argument', 'Target user ID must be a non-empty string');
+  }
+
+  try {
+    // First, check if the caller is an admin or moderator
+    const callerUserDoc = await db.collection('users').doc(callerUid).get();
+    if (!callerUserDoc.exists) {
+      throw new httpsError.HttpsError('not-found', 'Caller user not found');
+    }
+
+    const callerData = callerUserDoc.data();
+    const isCallerAdmin = callerData.isAdmin === true;
+    const isCallerModerator = callerData.isModerator === true;
+
+    if (!isCallerAdmin && !isCallerModerator) {
+      throw new httpsError.HttpsError('permission-denied', 'Only administrators and moderators can unblock users');
+    }
+
+    // Check if the target user exists
+    const targetUserDoc = await db.collection('users').doc(targetUid).get();
+    if (!targetUserDoc.exists) {
+      throw new httpsError.HttpsError('not-found', 'Target user not found');
+    }
+
+    // Unblock the user: set isBlocked to false, add unblockedAt timestamp, and remove blockedAt
+    await targetUserDoc.ref.update({
+      isBlocked: false,
+      unblockedAt: FieldValue.serverTimestamp(),
+      blockedAt: FieldValue.delete(), // Remove the blockedAt timestamp
+    });
+
+    console.log(`User ${targetUid} unblocked by ${callerUid}`);
+    return { success: true, uid: targetUid, unblockedAt: FieldValue.serverTimestamp() };
+  } catch (error) {
+    console.error('Error in unblockUser:', error);
+    if (error.code === 'permission-denied' || error.code === 'not-found' || error.code === 'invalid-argument') {
+      throw error;
+    }
+    throw new httpsError.HttpsError('internal', 'Unable to unblock user', error);
+  }
+});

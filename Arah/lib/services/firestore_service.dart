@@ -1,9 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import '../models/message_model.dart';
 import '../models/chat_room_model.dart';
 import '../models/user_model.dart';
 import '../models/task_model.dart';
-import '../models/report_model.dart'; // Add this import
+import '../models/report_model.dart';
 import 'package:flutter/foundation.dart';
 
 class FirestoreService {
@@ -45,7 +46,7 @@ class FirestoreService {
     }
   }
 
-  // ─── TASKS ─────────────────────────────────────────────────────────────────
+  // ─── TASKS ─────────────────────────────────────────────────────────────
 
   /// Stream all open tasks (used internally)
   Stream<List<TaskModel>> fetchOpenTasksStream() {
@@ -54,10 +55,12 @@ class FirestoreService {
         .where('status', isEqualTo: 'open')
         .snapshots()
         .map((snap) {
-          final list = snap.docs.map((d) => TaskModel.fromMap(d.data(), d.id)).toList();
-          list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-          return list;
-        });
+      final list = snap.docs
+          .map((d) => TaskModel.fromMap(d.data(), d.id))
+          .toList();
+      list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return list;
+    });
   }
 
   /// Stream open tasks, excluding tasks posted by [excludeBuyerId].
@@ -69,13 +72,13 @@ class FirestoreService {
         .where('status', isEqualTo: 'open')
         .snapshots()
         .map((snap) {
-          final list = snap.docs
-              .map((d) => TaskModel.fromMap(d.data(), d.id))
-              .where((task) => task.buyerId != excludeUserId)
-              .toList();
-          list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-          return list;
-        });
+      final list = snap.docs
+          .map((d) => TaskModel.fromMap(d.data(), d.id))
+          .where((task) => task.buyerId != excludeUserId)
+          .toList();
+      list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return list;
+    });
   }
 
   /// Stream tasks posted by a specific buyer (for Buyer's own task management)
@@ -85,10 +88,12 @@ class FirestoreService {
         .where('buyerId', isEqualTo: buyerId)
         .snapshots()
         .map((snap) {
-          final list = snap.docs.map((d) => TaskModel.fromMap(d.data(), d.id)).toList();
-          list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-          return list;
-        });
+      final list = snap.docs
+          .map((d) => TaskModel.fromMap(d.data(), d.id))
+          .toList();
+      list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return list;
+    });
   }
 
   Future<String> createTask(Map<String, dynamic> taskData) async {
@@ -104,7 +109,7 @@ class FirestoreService {
     await _db.collection('tasks').doc(taskId).update({'status': status});
   }
 
-  // ─── ORDERS ────────────────────────────────────────────────────────────────
+  // ─── ORDERS ────────────────────────────────────────────────────────────
 
   Stream<QuerySnapshot> fetchUserOrders(String uid, List<String> statuses) {
     return _db
@@ -360,7 +365,7 @@ class FirestoreService {
     }
   }
 
-  // ─── CHAT ──────────────────────────────────────────────────────────────────
+  // ─── CHAT ────────────────────────────────────────────────────────────────
 
   /// Stream chat rooms for a user (for ChatListScreen)
   Stream<List<ChatRoom>> fetchChatRooms(String userId) {
@@ -369,12 +374,12 @@ class FirestoreService {
         .where('participants', arrayContains: userId)
         .snapshots()
         .map((snapshot) {
-          final list = snapshot.docs
-              .map((doc) => ChatRoom.fromMap(doc.data(), doc.id))
-              .toList();
-          list.sort((a, b) => b.lastMessageTimestamp.compareTo(a.lastMessageTimestamp));
-          return list;
-        });
+      final list = snapshot.docs
+          .map((doc) => ChatRoom.fromMap(doc.data(), doc.id))
+          .toList();
+      list.sort((a, b) => b.lastMessageTimestamp.compareTo(a.lastMessageTimestamp));
+      return list;
+    });
   }
 
   /// Create or retrieve a chat room, returns chatId
@@ -515,7 +520,7 @@ class FirestoreService {
     return query.limit(limit).get();
   }
 
-  // ─── REPORTS ────────────────────────────────────────────────────────────────
+  // ─── REPORTS ─────────────────────────────────────────────────────────────
 
   /// Reports a user for inappropriate behavior or content.
   /// Throws an exception if validation fails or if a duplicate report exists within the cooldown period.
@@ -551,10 +556,37 @@ class FirestoreService {
       'illegal_activities',
       'other'
     ];
-    final normalizedReason = reason.trim().toLowerCase();
+
+    // Normalize reason: trim, lowercase, and standardize format
+    String normalizedReason = reason.trim().toLowerCase();
+
+    // Map common UI reason phrases to internal values
+    final reasonMap = {
+      'harassment': 'harassment',
+      'hate speech': 'hate_speech',
+      'hate speech or discrimination': 'hate_speech',
+      'hate speech/discrimination': 'hate_speech',
+      'hate speech and discrimination': 'hate_speech',
+      'fake profile': 'fake_profile',
+      'spam': 'spam',
+      'inappropriate content': 'inappropriate_content',
+      'illegal activities': 'illegal_activities',
+      'other': 'other'
+    };
+
+    // Try direct mapping first
+    if (reasonMap.containsKey(normalizedReason)) {
+      normalizedReason = reasonMap[normalizedReason]!;
+    } else {
+      // Fallback: convert spaces/hyphens to underscores
+      normalizedReason = normalizedReason
+          .replaceAll(RegExp(r'[-\s]+'), '_')
+          .replaceAll(RegExp(r'_+'), '_');
+    }
+
     if (!validReasons.contains(normalizedReason)) {
       debugPrint('FirestoreService: Invalid reason provided: $reason');
-      throw Exception('Invalid reason provided. Valid reasons are: harassment, hate_speech, fake_profile, spam, inappropriate_content, illegal_activities, other');
+      throw Exception('Invalid reason provided: "$reason". Valid reasons are: harassment, hate_speech, fake_profile, spam, inappropriate_content, illegal_activities, other');
     }
 
     // 2. Check for duplicate report within the cooldown window
@@ -639,10 +671,78 @@ class FirestoreService {
     });
   }
 
-  /// Optional: Get a single report by ID
+  /// Optional: Get a report by ID
   Future<ReportModel?> getReportById(String reportId) async {
     final doc = await _db.collection('reports').doc(reportId).get();
     if (!doc.exists) return null;
     return ReportModel.fromMap(doc.data()!, doc.id);
+  }
+
+  // ─── BLOCK/UNBLOCK USER ────────────────────────────────────────────────
+
+  /// Block a user by setting isBlocked to true
+  /// Only admins/moderators should be able to call this
+  Future<void> blockUser(String userId) async {
+    // Validate that the user exists
+    final userDoc = await _db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      throw Exception('User not found: $userId');
+    }
+
+    // Update the user's isBlocked field
+    await _db.collection('users').doc(userId).update({
+      'isBlocked': true,
+      'blockedAt': FieldValue.serverTimestamp(), // Optional: track when blocked
+    });
+  }
+
+  /// Block a user securely via Cloud Function (admin/moderator only)
+  Future<void> blockUserSecure(String userId) async {
+    try {
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('blockUser')
+          .call(<String, dynamic>{'uid': userId});
+      return result.data;
+    } on FirebaseFunctionsException catch (e) {
+      throw FirebaseException(
+        plugin: 'firebase-functions',
+        code: e.code,
+        message: e.message,
+      );
+    }
+  }
+
+  /// Unblock a user by setting isBlocked to false
+  /// Only admins/moderators should be able to call this
+  Future<void> unblockUser(String userId) async {
+    // Validate that the user exists
+    final userDoc = await _db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      throw Exception('User not found: $userId');
+    }
+
+    // Update the user's isBlocked field
+    await _db.collection('users').doc(userId).update({
+      'isBlocked': false,
+      'unblockedAt': FieldValue.serverTimestamp(), // Optional: track when unblocked
+      // Optionally clear the blockedAt timestamp
+      'blockedAt': FieldValue.delete(),
+    });
+  }
+
+  /// Unblock a user securely via Cloud Function (admin/moderator only)
+  Future<void> unblockUserSecure(String userId) async {
+    try {
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('unblockUser')
+          .call(<String, dynamic>{'uid': userId});
+      return result.data;
+    } on FirebaseFunctionsException catch (e) {
+      throw FirebaseException(
+        plugin: 'firebase-functions',
+        code: e.code,
+        message: e.message,
+      );
+    }
   }
 }

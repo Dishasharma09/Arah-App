@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_model.dart';
@@ -230,5 +231,41 @@ class UserProvider with ChangeNotifier {
     }
     _user = _user!.copyWith(skills: list);
     notifyListeners();
+  }
+
+  // ─── Block/Unblock User (Secure via Cloud Functions) ─────────────────────────
+
+  /// Block a user via Cloud Function (admin/moderator only)
+  /// Prevents the blocked user from accessing most app features
+  Future<void> blockUserSecure(String userId) async {
+    try {
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('blockUser')
+          .call(<String, dynamic>{'uid': userId});
+      return result.data;
+    } on FirebaseFunctionsException catch (e) {
+      throw FirebaseException(
+        plugin: 'firebase-functions',
+        code: e.code,
+        message: e.message,
+      );
+    }
+  }
+
+  /// Unblock a user via Cloud Function (admin/moderator only)
+  /// Restores access for previously blocked users
+  Future<void> unblockUserSecure(String userId) async {
+    try {
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('unblockUser')
+          .call(<String, dynamic>{'uid': userId});
+      return result.data;
+    } on FirebaseFunctionsException catch (e) {
+      throw FirebaseException(
+        plugin: 'firebase-functions',
+        code: e.code,
+        message: e.message,
+      );
+    }
   }
 }

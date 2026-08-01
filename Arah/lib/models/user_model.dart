@@ -11,6 +11,9 @@ class UserModel {
   final String githubUrl;
   final String linkedinUrl;
   final bool isProfilePublic;
+  final bool isBlocked; // Whether the user is blocked
+  final bool isAdmin; // Whether the user is an admin
+  final bool isModerator; // Whether the user is a moderator
   final double avgRating; // Average rating (0-5)
   final int ratingCount; // Total number of ratings received
 
@@ -27,6 +30,9 @@ class UserModel {
     this.githubUrl = '',
     this.linkedinUrl = '',
     this.isProfilePublic = true,
+    this.isBlocked = false,
+    this.isAdmin = false,
+    this.isModerator = false,
     this.avgRating = 0.0,
     this.ratingCount = 0,
   });
@@ -45,6 +51,9 @@ class UserModel {
       githubUrl: map['githubUrl'] ?? '',
       linkedinUrl: map['linkedinUrl'] ?? '',
       isProfilePublic: map['isProfilePublic'] ?? true,
+      isBlocked: map['isBlocked'] ?? false,
+      isAdmin: map['isAdmin'] ?? false,
+      isModerator: map['isModerator'] ?? false,
       avgRating: (map['avgRating'] as num?)?.toDouble() ?? 0.0,
       ratingCount: (map['ratingCount'] as int?) ?? 0,
     );
@@ -63,6 +72,9 @@ class UserModel {
       'githubUrl': githubUrl,
       'linkedinUrl': linkedinUrl,
       'isProfilePublic': isProfilePublic,
+      'isBlocked': isBlocked,
+      'isAdmin': isAdmin,
+      'isModerator': isModerator,
       'avgRating': avgRating,
       'ratingCount': ratingCount,
     };
@@ -78,6 +90,9 @@ class UserModel {
     String? linkedinUrl,
     String? currentMode,
     bool? isProfilePublic,
+    bool? isBlocked,
+    bool? isAdmin,
+    bool? isModerator,
     double? avgRating,
     int? ratingCount,
   }) {
@@ -94,6 +109,9 @@ class UserModel {
       linkedinUrl: linkedinUrl ?? this.linkedinUrl,
       currentMode: currentMode ?? this.currentMode,
       isProfilePublic: isProfilePublic ?? this.isProfilePublic,
+      isBlocked: isBlocked ?? this.isBlocked,
+      isAdmin: isAdmin ?? this.isAdmin,
+      isModerator: isModerator ?? this.isModerator,
       avgRating: avgRating ?? this.avgRating,
       ratingCount: ratingCount ?? this.ratingCount,
     );
