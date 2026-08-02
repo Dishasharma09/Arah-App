@@ -1,0 +1,119 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users collection
+    match /users/{userId} {
+      // Read profile:
+      // - Own profile: allowed if authenticated (regardless of block status)
+      // - Other's profile: allowed only if requester is admin/mod
+      allow get: if request.auth != null && (
+        // Reading own profile
+        (request.auth.uid == userId) ||
+        // Reading other's profile (only for admins/mods)
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true)
+      );
+
+      // Create profile: only during signup (auth.uid must match userId)
+      allow create: if request.auth != null && request.auth.uid == userId;
+
+      // Update profile:
+      // - Own profile: allowed if not blocked OR if requester is admin/mod
+      // - Other's profile: allowed only if requester is admin/mod
+      allow update: if request.auth != null && (
+        // Updating own profile
+        (request.auth.uid == userId &&
+         (!getAfter(/databases/$(database)/documents/users/$(userId)).data.isBlocked ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true)) ||
+        // Updating other's profile (only for admins/mods)
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true)
+      );
+
+      // Delete profile: not allowed (prevent accidental deletion)
+      allow delete: if false;
+    }
+
+    // Reports collection - for reporting users
+    match /reports/{reportId} {
+      // Allow authenticated users to create reports
+      allow create: if request.auth != null;
+
+      // Allow users to read only their own reports (as reporter or reported user)
+      // Allow admins/moderators to read all reports
+      allow get, list: if request.auth != null &&
+                      (
+                        (resource.data.reporterId == request.auth.uid ||
+                         resource.data.reportedUserId == request.auth.uid) ||
+                        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
+                        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true
+                      );
+
+      // Allow admins/moderators to update reports (and reporters can update their own reports)
+      allow update: if request.auth != null &&
+                    (
+                      request.resource.data.reporterId == request.auth.uid ||
+                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
+                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true
+                    );
+
+      // Prevent deletion of reports (important for audit trail)
+      allow delete: if false;
+    }
+
+    // Tasks collection
+    match /tasks/{taskId} {
+      allow read: if true; // Publicly readable tasks
+      allow create: if request.auth != null &&
+                    !get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked;
+      allow update: if request.auth != null &&
+                    !getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked &&
+                    (request.resource.data.buyerId == request.auth.uid ||
+                     request.resource.data.sellerId == request.auth.uid);
+      allow delete: if request.auth != null &&
+                    request.resource.data.buyerId == request.auth.uid &&
+                    !getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked;
+    }
+
+    // Orders
+    match /orders/{orderId} {
+      allow read: if request.auth != null &&
+                  (resource.data.buyerId == request.auth.uid ||
+                   resource.data.sellerId == request.auth.uid) &&
+                  !get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked;
+      allow create: if request.auth != null &&
+                    !get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked;
+      allow update: if request.auth != null &&
+                    (request.resource.data.buyerId == request.auth.uid ||
+                     request.resource.data.sellerId == request.auth.uid) &&
+                    !getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked;
+      allow delete: if request.auth != null &&
+                    (request.resource.data.buyerId == request.auth.uid ||
+                     request.resource.data.sellerId == request.auth.uid) &&
+                    !getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked;
+    }
+
+    // Chats - participants can read/write, but blocked users cannot participate
+    match /chats/{chatId} {
+      allow read: if request.auth != null &&
+                  resource.data.participants.hasAll([request.auth.uid]) &&
+                  !get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked;
+      allow create: if request.auth != null &&
+                    request.resource.data.participants.hasAll([request.auth.uid]) &&
+                    !getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked;
+      allow update: if request.auth != null &&
+                    request.resource.data.participants.hasAll([request.auth.uid]) &&
+                    !getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked;
+      allow delete: if request.auth != null &&
+                    request.resource.data.participants.hasAll([request.auth.uid]) &&
+                    !getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked;
+    }
+
+    // Default deny for unspecified collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
