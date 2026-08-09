@@ -65,6 +65,8 @@ class _SignupScreenState extends State<SignupScreen> {
         role: selectedRole,
         experienceLevel: 'Beginner',
         skills: [],
+        dateOfBirth: DateTime.now(), // placeholder
+        country: '', // placeholder
       );
 
       if (!mounted) return;

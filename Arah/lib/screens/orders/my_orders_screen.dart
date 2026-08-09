@@ -5,6 +5,7 @@ import '../../app/widgets/bottom_nav_bar.dart';
 import '../../provider/order_provider.dart';
 import '../../provider/user_provider.dart';
 import '../chat/chat_screen.dart';
+import '../../models/order_model.dart';
 
 class MyOrdersScreen extends StatefulWidget {
   final bool isSeller;

@@ -6,6 +6,7 @@ import '../models/chat_room_model.dart';
 import '../models/user_model.dart';
 import '../models/task_model.dart';
 import '../models/report_model.dart';
+import '../models/notification_model.dart';
 import 'package:flutter/foundation.dart';
 
 class FirestoreService {
@@ -33,40 +34,20 @@ class FirestoreService {
   }
 
   /// Get another user's basic info (name, photoUrl) for chat list display
-
-  /// Get another user's basic info (name, photoUrl) for chat list display
   Future<Map<String, String>> getUserBasicInfo(String uid) async {
     try {
       final doc = await _db.collection('users').doc(uid).get();
       if (!doc.exists) return {'name': 'Unknown', 'photoUrl': ''};
       final data = doc.data()!;
-      String displayName = '';
-      
-      // Check for displayName first
-      if (data.containsKey('displayName') && data['displayName'] != null && data['displayName'].toString().isNotEmpty) {
-        displayName = data['displayName'].toString();
-      }
-      // Then check for username
-      else if (data.containsKey('username') && data['username'] != null && data['username'].toString().isNotEmpty) {
-        displayName = data['username'].toString();
-      }
-      // Then check for name
-      else if (data.containsKey('name') && data['name'] != null && data['name'].toString().isNotEmpty) {
-        displayName = data['name'].toString();
-      }
-      // Finally check for email
-      else if (data.containsKey('email') && data['email'] != null && data['email'].toString().isNotEmpty) {
-        displayName = data['email'].toString();
-      }
-      
       return {
-        'name': displayName.isNotEmpty ? displayName : 'Unknown',
+        'name': data['name'] ?? 'Unknown',
         'photoUrl': data['photoUrl'] ?? '',
       };
     } catch (_) {
       return {'name': 'Unknown', 'photoUrl': ''};
     }
   }
+
   // ─── TASKS ─────────────────────────────────────────────────────────────
 
   /// Stream all open tasks (used internally)
@@ -157,6 +138,11 @@ class FirestoreService {
     await _db.collection('orders').doc(orderId).update({'status': status});
   }
 
+  /// Update multiple fields in an order document
+  Future<void> updateOrderFields(String orderId, Map<String, dynamic> fields) async {
+    await _db.collection('orders').doc(orderId).update(fields);
+  }
+
   /// Atomic: assign task to seller → creates order + updates task status
   Future<void> assignTaskToSeller({
     required String taskId,
@@ -223,6 +209,13 @@ class FirestoreService {
       'sellerId': sellerId,
     });
 
+    // Calculate commission and payout
+    // Default commission percentage is 15%
+    const double commissionPercentage = 15.0;
+    final double priceDouble = double.tryParse(task.price.replaceAll('�₹', '')) ?? 0.0;
+    final double commissionAmount = (priceDouble * commissionPercentage / 100);
+    final double payoutAmount = priceDouble - commissionAmount;
+
     // Create order document
     // In this workflow:
     // The buyer is the person who created the task (task.buyerId)
@@ -242,6 +235,12 @@ class FirestoreService {
       'status': 'Pending',
       'ratedByBuyer': false,
       'ratedBySeller': false,
+      // TASK 6: Escrow & Commission fields
+      'commissionPercentage': commissionPercentage,
+      'commissionAmount': commissionAmount,
+      'payoutAmount': payoutAmount,
+      'escrowStatus': 'held', // Funds are held in escrow initially
+      'paymentStatus': 'pending', // Payment pending from buyer
       'createdAt': FieldValue.serverTimestamp(),
     });
 
@@ -782,6 +781,103 @@ class FirestoreService {
       final result = await FirebaseFunctions.instance
           .httpsCallable('unblockUser')
           .call(<String, dynamic>{'uid': userId});
+      return result.data;
+    } on FirebaseFunctionsException catch (e) {
+      throw FirebaseException(
+        plugin: 'firebase-functions',
+        code: e.code,
+        message: e.message,
+      );
+    }
+  }
+
+
+  /// Perform smart matching between user and open tasks
+  /// Returns tasks ranked by relevance score based on skills, experience, and category
+  /// <param name="userId">The ID of the user to find matches for</param>
+  /// <param name="limit">Maximum number of matches to return (default: 20)</param>
+  /// <param name="lastTaskId">Last task ID from previous query for pagination (optional)</param>
+  /// <returns>Map containing matches list, lastTaskId for pagination, and hasMore flag</returns>
+  Future<Map<String, dynamic>> smartMatchTasks(String userId, {int limit = 20, String? lastTaskId}) async {
+    try {
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('smartMatchTasks')
+          .call(<String, dynamic>{
+            'userId': userId.trim(),
+            'limit': limit,
+            'lastTaskId': lastTaskId,
+          });
+      return Map<String, dynamic>.from(result.data);
+    } on FirebaseFunctionsException catch (e) {
+      throw FirebaseException(
+        plugin: 'firebase-functions',
+        code: e.code,
+        message: e.message,
+      );
+    }
+  }
+
+  /// Stream notifications for a user
+  /// <param name="userId">The ID of the user to get notifications for</param>
+  /// <returns>Stream of NotificationModel objects</returns>
+  Stream<List<NotificationModel>> fetchUserNotifications(String userId) {
+    return _db
+        .collection('notifications')
+        .where('recipientId', isEqualTo: userId)
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .map((snap) {
+      final list = snap.docs
+          .map((d) => NotificationModel.fromMap(d.data(), d.id))
+          .toList();
+      return list;
+    });
+  }
+
+  /// Mark a notification as read
+  /// <param name="notificationId">The ID of the notification to mark as read</param>
+  /// <returns>Future that completes when the notification is marked as read</returns>
+  Future<void> markNotificationAsRead(String notificationId) async {
+    await _db.collection('notifications').doc(notificationId).update({'isRead': true});
+  }
+
+  /// Mark all notifications as read for a user
+  /// <param name="userId">The ID of the user whose notifications should be marked as read</param>
+  /// <returns>Future that completes when all notifications are marked as read</returns>
+  Future<void> markAllNotificationsAsRead(String userId) async {
+    final snapshot = await _db
+        .collection('notifications')
+        .where('recipientId', isEqualTo: userId)
+        .where('isRead', isEqualTo: false)
+        .get();
+
+    final batch = _db.batch();
+    for (final doc in snapshot.docs) {
+      batch.update(doc.reference, {'isRead': true});
+    }
+    await batch.commit();
+  }
+
+  /// Get unread notification count for a user
+  /// <param name="userId">The ID of the user to get unread count for</param>
+  /// <returns>Future containing the count of unread notifications</returns>
+  Future<int> getUnreadNotificationCount(String userId) async {
+    final snapshot = await _db
+        .collection('notifications')
+        .where('recipientId', isEqualTo: userId)
+        .where('isRead', isEqualTo: false)
+        .get();
+    return snapshot.size;
+  }
+
+  /// Create or reset QA/test bot account for testing infrastructure
+  /// Only administrators can call this function
+  /// <returns>Future that completes when the test bot account is created/reset</returns>
+  Future<void> createOrResetTestBot() async {
+    try {
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('createOrResetTestBot')
+          .call(<String, dynamic>{});
       return result.data;
     } on FirebaseFunctionsException catch (e) {
       throw FirebaseException(

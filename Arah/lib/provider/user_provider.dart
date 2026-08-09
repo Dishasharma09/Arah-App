@@ -79,6 +79,8 @@ class UserProvider with ChangeNotifier {
     required String role,
     required String experienceLevel,
     required List<String> skills,
+    required DateTime dateOfBirth,
+    required String country,
   }) async {
     final newUser = UserModel(
       id: uid,
@@ -88,6 +90,10 @@ class UserProvider with ChangeNotifier {
       currentMode: role == 'Seller' ? 'Seller' : 'Buyer',
       experienceLevel: experienceLevel,
       skills: skills,
+      dateOfBirth: dateOfBirth,
+      country: country,
+      createdAt: DateTime.now(),
+      lastSeen: DateTime.now(),
     );
     await _firestoreService.createUserProfile(uid, newUser.toMap());
     _user = newUser;
@@ -233,7 +239,7 @@ class UserProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  // ─── Block/Unblock User (Secure via Cloud Functions) ─────────────────────────
+  // ─── Block/Unblock User (Secure via Cloud Functions) ────────────────────────
 
   /// Block a user via Cloud Function (admin/moderator only)
   /// Prevents the blocked user from accessing most app features

@@ -1,3 +1,5 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 class UserModel {
   final String id;
   final String name;
@@ -16,6 +18,15 @@ class UserModel {
   final bool isModerator; // Whether the user is a moderator
   final double avgRating; // Average rating (0-5)
   final int ratingCount; // Total number of ratings received
+  // Stage 4: User Management fields
+  final String? username; // Unique username/handle
+  final bool isVerified; // Whether the user is verified
+  final DateTime? verificationDate; // When the user was verified
+  // TASK 5: User Data fields
+  final DateTime? dateOfBirth; // Date of birth for age calculation
+  final String? country; // Country for localization/compliance
+  final DateTime? createdAt; // When the user joined
+  final DateTime? lastSeen; // Last time the user was active
 
   UserModel({
     required this.id,
@@ -35,6 +46,15 @@ class UserModel {
     this.isModerator = false,
     this.avgRating = 0.0,
     this.ratingCount = 0,
+    // Stage 4: User Management fields
+    this.username,
+    this.isVerified = false,
+    this.verificationDate,
+    // TASK 5: User Data fields
+    this.dateOfBirth,
+    this.country,
+    this.createdAt,
+    this.lastSeen,
   });
 
   factory UserModel.fromMap(Map<String, dynamic> map, String id) {
@@ -56,6 +76,23 @@ class UserModel {
       isModerator: map['isModerator'] ?? false,
       avgRating: (map['avgRating'] as num?)?.toDouble() ?? 0.0,
       ratingCount: (map['ratingCount'] as int?) ?? 0,
+      // Stage 4: User Management fields
+      username: map['username'],
+      isVerified: map['isVerified'] ?? false,
+      verificationDate: map['verificationDate'] != null
+          ? (map['verificationDate'] as Timestamp).toDate()
+          : null,
+      // TASK 5: User Data fields
+      dateOfBirth: map['dateOfBirth'] != null
+          ? (map['dateOfBirth'] as Timestamp).toDate()
+          : null,
+      country: map['country'],
+      createdAt: map['createdAt'] != null
+          ? (map['createdAt'] as Timestamp).toDate()
+          : null,
+      lastSeen: map['lastSeen'] != null
+          ? (map['lastSeen'] as Timestamp).toDate()
+          : null,
     );
   }
 
@@ -77,6 +114,15 @@ class UserModel {
       'isModerator': isModerator,
       'avgRating': avgRating,
       'ratingCount': ratingCount,
+      // Stage 4: User Management fields
+      'username': username,
+      'isVerified': isVerified,
+      'verificationDate': verificationDate?.millisecondsSinceEpoch,
+      // TASK 5: User Data fields
+      'dateOfBirth': dateOfBirth?.millisecondsSinceEpoch,
+      'country': country,
+      'createdAt': createdAt?.millisecondsSinceEpoch,
+      'lastSeen': lastSeen?.millisecondsSinceEpoch,
     };
   }
 
@@ -95,6 +141,15 @@ class UserModel {
     bool? isModerator,
     double? avgRating,
     int? ratingCount,
+    // Stage 4: User Management fields
+    String? username,
+    bool? isVerified,
+    DateTime? verificationDate,
+    // TASK 5: User Data fields
+    DateTime? dateOfBirth,
+    String? country,
+    DateTime? createdAt,
+    DateTime? lastSeen,
   }) {
     return UserModel(
       id: id,
@@ -107,13 +162,21 @@ class UserModel {
       photoUrl: photoUrl ?? this.photoUrl,
       githubUrl: githubUrl ?? this.githubUrl,
       linkedinUrl: linkedinUrl ?? this.linkedinUrl,
-      currentMode: currentMode ?? this.currentMode,
       isProfilePublic: isProfilePublic ?? this.isProfilePublic,
       isBlocked: isBlocked ?? this.isBlocked,
       isAdmin: isAdmin ?? this.isAdmin,
       isModerator: isModerator ?? this.isModerator,
       avgRating: avgRating ?? this.avgRating,
       ratingCount: ratingCount ?? this.ratingCount,
+      // Stage 4: User Management fields
+      username: username ?? this.username,
+      isVerified: isVerified ?? this.isVerified,
+      verificationDate: verificationDate ?? this.verificationDate,
+      // TASK 5: User Data fields
+      dateOfBirth: dateOfBirth ?? this.dateOfBirth,
+      country: country ?? this.country,
+      createdAt: createdAt ?? this.createdAt,
+      lastSeen: lastSeen ?? this.lastSeen,
     );
   }
 }

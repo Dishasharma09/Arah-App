@@ -2,99 +2,54 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Users collection
+    // Users collection - more granular access control
     match /users/{userId} {
-      // Read profile:
-      // - Own profile: allowed if authenticated
-      // - Other's profile: allowed only if requester is admin/mod
-      allow get: if request.auth != null && (
-        // Reading own profile
-        (request.auth.uid == userId) ||
-        // Reading other's profile (only for admins/mods)
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true)
-      );
+      // Allow users to read their own data
+      allow get: if request.auth != null && request.auth.uid == userId;
 
-      // Create profile: only during signup (auth.uid must match userId)
-      allow create: if request.auth != null && request.auth.uid == userId;
+      // Allow users to update their own profile data, but restrict sensitive fields
+      allow update: if request.auth != null && request.auth.uid == userId
+                    && !(request.resource.data.keys() hasAll ['isAdmin', 'isModerator', 'isBlocked'])
+                    && (request.resource.data.keys() - resource.data.keys() hasSubset ['name', 'bio', 'experienceLevel', 'skills', 'photoUrl', 'githubUrl', 'linkedinUrl', 'isProfilePublic', 'username']);
 
-      // Update profile:
-      // - Own profile: allowed if authenticated (removed isBlocked restriction for now)
-      // - Other's profile: allowed only if requester is admin/mod
-      allow update: if request.auth != null && (
-        // Updating own profile
-        (request.auth.uid == userId) ||
-        // Updating other's profile (only for admins/mods)
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true)
-      );
+      // Allow anyone to read public profiles
+      allow get: if request.auth != null && get(/databases/$(database)/documents/users/$(userId)).data.isProfilePublic == true;
 
-      // Delete profile: not allowed (prevent accidental deletion)
-      allow delete: if false;
+      // Admins and moderators can read all user data
+      allow get: if request.auth != null
+                 && (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true
+                      || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true);
+
+      // Admins and moderators can update certain fields (excluding sensitive ones that should only be changed via specific functions)
+      allow update: if request.auth != null
+                    && (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true
+                         || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true)
+                    && !(request.resource.data.keys() hasAll ['isAdmin', 'isModerator']); // Prevent changing admin/moderator status directly
     }
 
-    // Reports collection - for reporting users
+    // Reports collection - allow authenticated users full access
     match /reports/{reportId} {
-      // Allow authenticated users to create reports
-      allow create: if request.auth != null;
-
-      // Allow users to read only their own reports (as reporter or reported user)
-      // Allow admins/moderators to read all reports
-      allow get, list: if request.auth != null &&
-                      (
-                        (resource.data.reporterId == request.auth.uid ||
-                         resource.data.reportedUserId == request.auth.uid) ||
-                        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
-                        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true
-                      );
-
-      // Allow admins/moderators to update reports (and reporters can update their own reports)
-      allow update: if request.auth != null &&
-                    (
-                      request.resource.data.reporterId == request.auth.uid ||
-                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
-                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isModerator == true
-                    );
-
-      // Prevent deletion of reports (important for audit trail)
-      allow delete: if false;
+      allow read, write: if request.auth != null;
     }
 
-    // Tasks collection
+    // Tasks collection - allow authenticated users full access
     match /tasks/{taskId} {
-      allow read: if true; // Publicly readable tasks
-      allow create: if request.auth != null;
-      allow update: if request.auth != null &&
-                    (request.resource.data.buyerId == request.auth.uid ||
-                     request.resource.data.sellerId == request.auth.uid);
-      allow delete: if request.auth != null &&
-                    request.resource.data.buyerId == request.auth.uid;
+      allow read, write: if request.auth != null;
     }
 
-    // Orders
+    // Orders collection - allow authenticated users full access
     match /orders/{orderId} {
-      allow read: if request.auth != null &&
-                  (resource.data.buyerId == request.auth.uid ||
-                   resource.data.sellerId == request.auth.uid);
-      allow create: if request.auth != null;
-      allow update: if request.auth != null &&
-                    (request.resource.data.buyerId == request.auth.uid ||
-                     request.resource.data.sellerId == request.auth.uid);
-      allow delete: if request.auth != null &&
-                    (request.resource.data.buyerId == request.auth.uid ||
-                     request.resource.data.sellerId == request.auth.uid);
+      allow read, write: if request.auth != null;
     }
 
-    // Chats - participants can read/write (removed isBlocked restrictions to fix message access)
+    // Chats collection - allow authenticated users full access
     match /chats/{chatId} {
-      allow read: if request.auth != null &&
-                  resource.data.participants.hasAll([request.auth.uid]);
-      allow create: if request.auth != null &&
-                    request.resource.data.participants.hasAll([request.auth.uid]);
-      allow update: if request.auth != null &&
-                    request.resource.data.participants.hasAll([request.auth.uid]);
-      allow delete: if request.auth != null &&
-                    request.resource.data.participants.hasAll([request.auth.uid]);
+      allow read, write: if request.auth != null;
+
+      // Messages subcollection - allow authenticated users full access
+      match /messages/{messageId} {
+        allow read, write: if request.auth != null;
+      }
     }
 
     // Default deny for unspecified collections

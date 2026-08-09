@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/task_model.dart';
+import '../models/user_model.dart';
 import '../services/firestore_service.dart';
 
 class HomeProvider with ChangeNotifier {
@@ -110,46 +111,3 @@ class HomeProvider with ChangeNotifier {
   }
 
   @override
-  /// Fetch smart matched tasks for a user based on skills, experience, and category
-  /// Uses Cloud Function to compute match scores and return ranked results
-  /// 
-  /// [userId] The ID of the user to find matches for
-  /// [limit] Maximum number of matches to return (default: 20)
-  /// [lastTaskId] Last task ID from previous query for pagination (optional)
-  /// Returns a map with matches list, lastTaskId for pagination, and hasMore flag
-  Future<Map<String, dynamic>> fetchSmartMatchedTasks(String userId, {int limit = 20, String? lastTaskId}) async {
-    try {
-      final result = await _firestoreService.smartMatchTasks(userId, limit: limit, lastTaskId: lastTaskId);
-      
-      // Convert the task maps back to TaskModel objects
-      final List<TaskModel> taskMatches = <TaskModel>[];
-      
-      if (result['matches'] != null) {
-        for (var matchMap in result['matches'] as List<dynamic>) {
-          final taskData = matchMap['task'] as Map<String, dynamic>;
-          taskMatches.add(TaskModel.fromMap({
-            ...taskData,
-            'id': matchMap['taskId']
-          } as Map<String, dynamic>, matchMap['taskId'] as String));
-        }
-      }
-      
-      return <String, dynamic>{
-        'matches': taskMatches,
-        'lastTaskId': result['lastTaskId'] as String?,
-        'hasMore': result['hasMore'] as bool,
-        'matchBreakdowns': (result['matches'] as List<dynamic>?)
-                ?.map((m) => m as Map<String, dynamic>)
-                .toList() ?? []
-      };
-    } catch (e) {
-      debugPrint('Error fetching smart matched tasks: $e');
-      rethrow;
-    }
-  }
-  @override
-  void dispose() {
-    _taskSubscription?.cancel();
-    super.dispose();
-  }
-}
